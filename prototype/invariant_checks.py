@@ -1,4 +1,3 @@
-cat > prototype/invariant_checks.py <<'EOF'
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -78,4 +77,3 @@ def check_invariants(
         return r
 
     return InvariantResult(True)
-EOF
