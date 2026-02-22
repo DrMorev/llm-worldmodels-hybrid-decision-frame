@@ -1,4 +1,3 @@
-cat > prototype/config.py <<'EOF'
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,4 +19,3 @@ class PrototypeConfig:
     # Behavior controls for the dummy "LLM"
     hallucination_rate: float = 0.30  # probability planner produces wrong predicted state
     uncertainty_stop_threshold: float = 0.80  # stop if uncertainty rises above this
-EOF
