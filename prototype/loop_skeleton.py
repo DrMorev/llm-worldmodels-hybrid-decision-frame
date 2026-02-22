@@ -1,4 +1,3 @@
-cat > prototype/loop_skeleton.py <<'EOF'
 from __future__ import annotations
 
 import random
@@ -6,8 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
-from config import PrototypeConfig
-from invariant_checks import InvariantResult, check_invariants
+from .config import PrototypeConfig
+from .invariant_checks import InvariantResult, check_invariants
 
 
 # --- Toy environment (acts as Simulator/Oracle) --------------------------------
@@ -179,4 +178,3 @@ def run_loop(
         steps=cfg.max_steps,
         reached_goal=env.is_done(),
     )
-EOF
