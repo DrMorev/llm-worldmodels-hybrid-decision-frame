@@ -1,4 +1,3 @@
-cat > prototype/example_run.py <<'EOF'
 from __future__ import annotations
 
 import random
@@ -39,4 +38,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-EOF
