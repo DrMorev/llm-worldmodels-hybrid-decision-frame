@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import random
 
-from config import PrototypeConfig
-from loop_skeleton import DummyPlanner, LineWorld, run_loop
+from .config import PrototypeConfig
+from .loop_skeleton import DummyPlanner, LineWorld, run_loop
 
 
 def main() -> None:
