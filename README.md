@@ -24,13 +24,13 @@ It exists to reduce error risk and self-deception when the cost of failure diffe
 Engineering decision-makers and applied researchers choosing architecture under risk, latency constraints, and verification constraints.
 
 ## How to use
-1) Read `docs/decision_protocol.md` and apply it to your task.
-2) Use `docs/definitions.md` to keep terms strict.
-3) Check `docs/limitations.md` before drawing conclusions from any demo.
-4) Use `research/context_pack.md` and `research/core_sources.md` as the minimal canon.
+1) Read `docs/decision_protocol.md` and apply it to your task.  
+2) Use `docs/definitions.md` to keep terms strict.  
+3) Check `docs/limitations.md` before drawing conclusions from any demo.  
+4) Use `research/context_pack.md` and `research/core_sources.md` as the minimal canon.  
 5) Use `prototype/README.md` only as a narrow scaffold for making tradeoffs falsifiable.
 
-## Repository map
-- `docs/` decision protocol, scope, definitions, limitations
-- `research/` context pack + core sources map
-- `prototype/` narrow closed-loop scaffold (not validating general claims)
+## Quick run (Python 3.10+, stdlib only)
+```bash
+python -m prototype.example_run
+python -m prototype.scenarios.latency_bound
