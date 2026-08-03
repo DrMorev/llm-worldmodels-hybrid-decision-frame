@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import inspect
+import json
+import math
+from pathlib import Path
+import random
+import shutil
+import tempfile
+import unittest
+
+from development.statistical_feasibility.betting import (
+    ControlledNumericalFailure,
+    EmptyConfidenceSet,
+    SupportAdmissibilityFailure,
+    SupportTerm,
+    WealthStep,
+    bisect_lower_bound,
+    estimate_beta,
+    evaluate_running_bound,
+    log_wealth,
+    verify_monotonicity,
+    wealth_multiplier,
+)
+from development.statistical_feasibility.core import (
+    ArmSpec,
+    SmokeConfig,
+    digest_rows,
+    stable_seed,
+)
+from development.statistical_feasibility.run import (
+    _group_records,
+    _record_for_lambda,
+    default_output_directory,
+    run_smoke,
+    simulate_audit,
+)
+from development.statistical_feasibility.sampling import (
+    draw_item,
+    policy_probabilities,
+    score_informed_probabilities,
+    uniform_probabilities,
+)
+from development.statistical_feasibility.scenarios import generate_fixture
+
+
+class StatisticalFeasibilityTests(unittest.TestCase):
+    def test_01_uniform_probabilities_sum_to_one(self) -> None:
+        probabilities = uniform_probabilities(("a", "b", "c"))
+        self.assertTrue(math.isclose(math.fsum(probabilities.values()), 1.0))
+        self.assertEqual(set(probabilities.values()), {1.0 / 3.0})
+
+    def test_02_score_probabilities_positive_sum_and_uniform_reductions(self) -> None:
+        remaining = ("a", "b", "c")
+        probabilities, _ = score_informed_probabilities(
+            remaining, {"a": 0.1, "b": 0.2, "c": 0.8}, 0.1
+        )
+        self.assertTrue(math.isclose(math.fsum(probabilities.values()), 1.0))
+        self.assertTrue(all(value > 0.0 for value in probabilities.values()))
+        uniform = uniform_probabilities(remaining)
+        constant, _ = score_informed_probabilities(
+            remaining, {"a": 0.5, "b": 0.5, "c": 0.5}, 0.1
+        )
+        zero, _ = score_informed_probabilities(
+            remaining, {"a": 0.0, "b": 0.0, "c": 0.0}, 0.1
+        )
+        self.assertEqual(constant, uniform)
+        self.assertEqual(zero, uniform)
+
+    def test_03_sampling_without_replacement_has_no_duplicates(self) -> None:
+        rng = random.Random(7)
+        remaining = [f"i-{index}" for index in range(20)]
+        selected = []
+        while remaining:
+            item_id = draw_item(uniform_probabilities(remaining), rng)
+            selected.append(item_id)
+            remaining.remove(item_id)
+        self.assertEqual(len(selected), len(set(selected)))
+
+    def test_04_q_reconstructs_from_pre_reveal_state(self) -> None:
+        remaining = ("a", "b", "c")
+        scores = {"a": 0.2, "b": 0.4, "c": 0.9}
+        first, first_norm = policy_probabilities("score_informed", remaining, scores, 0.5)
+        replay, replay_norm = policy_probabilities("score_informed", remaining, scores, 0.5)
+        self.assertEqual(tuple(first.items()), tuple(replay.items()))
+        self.assertEqual(first_norm, replay_norm)
+
+    def test_05_sampling_policy_signature_has_no_outcome_input(self) -> None:
+        parameters = inspect.signature(policy_probabilities).parameters
+        self.assertNotIn("outcomes", parameters)
+        self.assertNotIn("y", parameters)
+        self.assertEqual(tuple(parameters), ("policy", "remaining_ids", "scores", "gamma"))
+
+    def test_06_uniform_weight_importance_expectation(self) -> None:
+        outcomes = {"a": 1, "b": 0, "c": 1}
+        probabilities = {"a": 0.2, "b": 0.3, "c": 0.5}
+        expectation = math.fsum(
+            probabilities[item_id] * outcomes[item_id] / (3 * probabilities[item_id])
+            for item_id in probabilities
+        )
+        self.assertAlmostEqual(expectation, 2.0 / 3.0)
+
+    def test_07_control_variate_zero_conditional_mean(self) -> None:
+        probabilities = {"a": 0.2, "b": 0.3, "c": 0.5}
+        scores = {"a": 0.1, "b": 0.5, "c": 0.8}
+        expected_score = math.fsum(probabilities[i] * scores[i] for i in probabilities)
+        expected_u = math.fsum(
+            probabilities[i] * (scores[i] - expected_score) for i in probabilities
+        )
+        self.assertAlmostEqual(expected_u, 0.0)
+
+    def test_08_constant_scores_produce_zero_u(self) -> None:
+        probabilities = uniform_probabilities(("a", "b", "c"))
+        scores = {"a": 0.5, "b": 0.5, "c": 0.5}
+        expected_score = math.fsum(probabilities[i] * scores[i] for i in probabilities)
+        self.assertTrue(all(scores[i] - expected_score == 0.0 for i in probabilities))
+
+    def test_09_beta_is_predictable_delayed_and_clipped(self) -> None:
+        self.assertEqual(estimate_beta((), 1e-6).value, 0.0)
+        self.assertEqual(estimate_beta(((1.0, 0.2), (2.0, 0.4)), 1e-6).value, 0.0)
+        prior = ((1.0, 0.0), (3.0, 0.5), (5.0, 1.0))
+        first = estimate_beta(prior, 1e-6)
+        self.assertGreaterEqual(first.value, -1.0)
+        self.assertLessEqual(first.value, 1.0)
+        self.assertEqual(first, estimate_beta(tuple(prior), 1e-6))
+
+    def test_10_smoke_lambdas_have_nonnegative_worst_case_multiplier(self) -> None:
+        for fixed_lambda in (0.05, 0.10, 0.25, 0.50):
+            self.assertGreaterEqual(wealth_multiplier(fixed_lambda, -1.0, 1.0), 0.0)
+
+    def test_11_log_wealth_is_finite_or_controlled(self) -> None:
+        finite = log_wealth((WealthStep(1.5, 0.0),), 0.5, 0.5)
+        self.assertTrue(math.isfinite(finite))
+        with self.assertRaises(ControlledNumericalFailure):
+            wealth_multiplier(0.5, -2.0, 1.0)
+
+    def test_12_wealth_is_monotone_in_complement_candidate(self) -> None:
+        steps = (WealthStep(1.2, 0.0), WealthStep(0.7, 0.1))
+        self.assertTrue(verify_monotonicity(steps, 0.25, 1e-12))
+        self.assertGreaterEqual(log_wealth(steps, 0.25, 0.0), log_wealth(steps, 0.25, 1.0))
+
+    def test_13_bisection_returns_bound_in_unit_interval(self) -> None:
+        steps = tuple(WealthStep(2.5, 0.0) for _ in range(5))
+        bound = bisect_lower_bound(steps, 0.5, 0.05, 1e-10)
+        self.assertGreaterEqual(bound, 0.0)
+        self.assertLessEqual(bound, 1.0)
+
+    def test_13b_empty_confidence_set_is_not_a_numeric_bound(self) -> None:
+        steps = tuple(WealthStep(3.0, 0.0) for _ in range(5))
+        with self.assertRaises(EmptyConfidenceSet):
+            bisect_lower_bound(steps, 0.5, 0.05, 1e-10)
+        population = generate_fixture("all_correct", 5, 1)
+        record = _record_for_lambda(
+            "all_correct",
+            0,
+            population,
+            ArmSpec("A", "uniform", False, None),
+            "empty-audit",
+            {
+                "wealth_steps": steps,
+                "warnings": [],
+                "observations": 5,
+                "errors_observed": 0,
+                "min_q": 0.2,
+                "max_importance_weight": 1.0,
+                "q_replay_passed": True,
+            },
+            0.5,
+            SmokeConfig(population_size=5, budget=5, ordinary_replicates=1),
+        )
+        self.assertEqual(record["validity_status"], "empty_confidence_set")
+        self.assertIsNone(record["final_upper_confidence_bound"])
+        self.assertFalse(record["coverage_indicator"])
+        summary = _group_records([record])[0]
+        self.assertEqual(summary["empty_confidence_set_count"], 1)
+        self.assertEqual(summary["empty_confidence_set_proportion"], 1.0)
+        self.assertEqual(summary["mean_upper_bound"], "")
+        self.assertEqual(summary["median_upper_bound"], "")
+
+    def test_14_running_intersection_never_weakens(self) -> None:
+        steps = (
+            WealthStep(2.0, 0.05),
+            WealthStep(0.2, 0.10),
+            WealthStep(1.5, 0.15),
+        )
+        bounds = [
+            evaluate_running_bound(steps[:end], 0.25, 0.05, 1e-10, 1e-10).lower_complement_bound
+            for end in range(1, len(steps) + 1)
+        ]
+        self.assertEqual(bounds, sorted(bounds))
+
+    def test_15_upper_error_bound_is_one_minus_lower_complement(self) -> None:
+        evaluation = evaluate_running_bound(
+            (WealthStep(1.5, 0.1),), 0.25, 0.05, 1e-10, 1e-10
+        )
+        self.assertEqual(
+            evaluation.upper_error_bound, 1.0 - evaluation.lower_complement_bound
+        )
+
+    def test_15b_support_wide_check_rejects_unrealized_negative_payoff(self) -> None:
+        realized_only = WealthStep(1.0, 0.0)
+        self.assertTrue(math.isfinite(log_wealth((realized_only,), 0.5, 1.0)))
+        unseen_negative = SupportTerm(
+            item_id="unselected-item",
+            outcome=0,
+            score=1.0,
+            probability=0.5,
+            control_value=-1.0,
+            beta=1.0,
+            constant_term=-1.1,
+        )
+        support_checked = WealthStep(1.0, 0.0, (unseen_negative,))
+        self.assertGreaterEqual(
+            wealth_multiplier(0.5, realized_only.constant_term, 1.0), 0.0
+        )
+        with self.assertRaises(SupportAdmissibilityFailure):
+            log_wealth((support_checked,), 0.5, 1.0, 1e-10)
+
+    def test_15c_audit_serializes_both_outcomes_for_every_remaining_item(self) -> None:
+        population = generate_fixture("tied_score", 7, 19)
+        audit = simulate_audit(
+            population, ArmSpec("D", "score_informed", True, 0.1), 1, 1e-6, 23
+        )
+        step = audit["wealth_steps"][0]
+        self.assertEqual(step.support_term_count, 2 * population.size)
+        self.assertIsNotNone(step.support_minimum)
+        self.assertGreater(step.support_minimum.probability, 0.0)
+
+    def test_16_full_census_logical_bound_is_exact(self) -> None:
+        population = generate_fixture("independent_score", 20, 11)
+        audit = simulate_audit(
+            population, ArmSpec("A", "uniform", False, None), 20, 1e-6, 17
+        )
+        evaluation = evaluate_running_bound(
+            audit["wealth_steps"], 0.1, 0.05, 1e-10, 1e-10
+        )
+        self.assertAlmostEqual(evaluation.upper_error_bound, population.true_prevalence)
+
+    def test_17_extreme_fixtures_have_coherent_bounds(self) -> None:
+        for fixture, expected in (("all_correct", 0.0), ("all_error", 1.0)):
+            population = generate_fixture(fixture, 10, 3)
+            audit = simulate_audit(
+                population, ArmSpec("A", "uniform", False, None), 10, 1e-6, 5
+            )
+            evaluation = evaluate_running_bound(
+                audit["wealth_steps"], 0.1, 0.05, 1e-10, 1e-10
+            )
+            self.assertAlmostEqual(evaluation.upper_error_bound, expected)
+
+    def test_18_paired_arms_share_identical_population(self) -> None:
+        population = generate_fixture("tied_score", 30, 13)
+        digest = digest_rows(
+            (item.item_id, item.score.hex(), item.outcome) for item in population.items
+        )
+        for arm in (
+            ArmSpec("A", "uniform", False, None),
+            ArmSpec("B", "uniform", True, None),
+            ArmSpec("C", "score_informed", False, 0.1),
+            ArmSpec("D", "score_informed", True, 0.1),
+        ):
+            simulate_audit(population, arm, 5, 1e-6, stable_seed(9, arm.name))
+            self.assertEqual(
+                digest,
+                digest_rows((item.item_id, item.score.hex(), item.outcome) for item in population.items),
+            )
+
+    def test_19_same_seed_produces_byte_identical_machine_json(self) -> None:
+        config = SmokeConfig(
+            population_size=12,
+            budget=5,
+            ordinary_replicates=1,
+            gammas=(0.1,),
+            lambdas=(0.1,),
+        )
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            first_result = run_smoke(Path(first), config)
+            second_result = run_smoke(Path(second), config)
+            self.assertEqual(
+                Path(first_result["machine_json"]).read_bytes(),
+                Path(second_result["machine_json"]).read_bytes(),
+            )
+
+    def test_20_default_outputs_are_outside_repository(self) -> None:
+        output = default_output_directory()
+        try:
+            repository = Path(__file__).resolve().parents[1]
+            self.assertNotEqual(output.resolve(), repository)
+            self.assertNotIn(repository.resolve(), output.resolve().parents)
+        finally:
+            shutil.rmtree(output)
+
+
+if __name__ == "__main__":
+    unittest.main()
