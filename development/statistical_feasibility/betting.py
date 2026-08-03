@@ -11,6 +11,10 @@ class ControlledNumericalFailure(RuntimeError):
     """A numerical condition that invalidates one development run."""
 
 
+class MonotonicityFailure(ControlledNumericalFailure):
+    """Monotonicity was evaluated and failed."""
+
+
 class EmptyConfidenceSet(ControlledNumericalFailure):
     """The inverted confidence set is empty; this is a coverage event, not a bound."""
 
@@ -73,8 +77,7 @@ class BoundEvaluation:
     lower_complement_bound: Optional[float]
     upper_error_bound: Optional[float]
     min_multiplier: float
-    negative_multiplier_count: int
-    monotonicity_passed: bool
+    monotonicity_status: str
     final_log_wealth_g0: object
     final_log_wealth_g1: object
     final_log_wealth_at_bound: object
@@ -242,7 +245,7 @@ def evaluate_running_bound(
     monotonicity_tolerance: float,
 ) -> BoundEvaluation:
     if not steps:
-        return BoundEvaluation(0.0, 1.0, 1.0, 0, True, 0.0, 0.0, 0.0)
+        return BoundEvaluation(0.0, 1.0, 1.0, "passed", 0.0, 0.0, 0.0)
     running_lower = 0.0
     min_multiplier = math.inf
     for end in range(1, len(steps) + 1):
@@ -253,7 +256,7 @@ def evaluate_running_bound(
             monotonicity_tolerance,
             inversion_tolerance,
         ):
-            raise ControlledNumericalFailure("log wealth is not monotone in candidate g")
+            raise MonotonicityFailure("log wealth is not monotone in candidate g")
         try:
             raw_lower = bisect_lower_bound(
                 prefix,
@@ -291,8 +294,7 @@ def evaluate_running_bound(
         lower_complement_bound=running_lower,
         upper_error_bound=1.0 - running_lower,
         min_multiplier=min_multiplier,
-        negative_multiplier_count=0,
-        monotonicity_passed=True,
+        monotonicity_status="passed",
         final_log_wealth_g0=_json_number(final_g0),
         final_log_wealth_g1=_json_number(final_g1),
         final_log_wealth_at_bound=_json_number(final_bound),

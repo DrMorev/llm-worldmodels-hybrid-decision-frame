@@ -3,15 +3,20 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import os
 from pathlib import Path
 import random
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from development.statistical_feasibility.betting import (
     ControlledNumericalFailure,
     EmptyConfidenceSet,
+    MonotonicityFailure,
     SupportAdmissibilityFailure,
     SupportTerm,
     WealthStep,
@@ -25,6 +30,7 @@ from development.statistical_feasibility.betting import (
 from development.statistical_feasibility.core import (
     ArmSpec,
     SmokeConfig,
+    development_arms,
     digest_rows,
     stable_seed,
 )
@@ -32,13 +38,18 @@ from development.statistical_feasibility.run import (
     _group_records,
     _record_for_lambda,
     default_output_directory,
+    inspect_git_provenance,
+    replay_artifact,
     run_smoke,
     simulate_audit,
 )
 from development.statistical_feasibility.sampling import (
     draw_item,
     policy_probabilities,
+    replay_pre_reveal_draw,
     score_informed_probabilities,
+    select_item_from_variate,
+    serialize_pre_reveal_draw,
     uniform_probabilities,
 )
 from development.statistical_feasibility.scenarios import generate_fixture
@@ -84,6 +95,46 @@ class StatisticalFeasibilityTests(unittest.TestCase):
         replay, replay_norm = policy_probabilities("score_informed", remaining, scores, 0.5)
         self.assertEqual(tuple(first.items()), tuple(replay.items()))
         self.assertEqual(first_norm, replay_norm)
+
+    def test_04b_serialized_pre_reveal_replay_and_tamper_detection(self) -> None:
+        remaining = ("a", "b", "c")
+        scores = {"a": 0.2, "b": 0.4, "c": 0.9}
+        probabilities, normalization = policy_probabilities(
+            "score_informed", remaining, scores, 0.5
+        )
+        draw_uniform = 0.42
+        selected = select_item_from_variate(probabilities, draw_uniform)
+        record = serialize_pre_reveal_draw(
+            step=1,
+            remaining_item_ids=remaining,
+            scores=scores,
+            sampling_policy="score_informed",
+            gamma=0.5,
+            probabilities=probabilities,
+            normalization=normalization,
+            draw_uniform=draw_uniform,
+            selected_item_id=selected,
+        )
+        self.assertTrue(replay_pre_reveal_draw(record).passed)
+        mutations = (
+            ("remaining_scores", lambda value: value.__setitem__(0, 0.21)),
+            ("remaining_item_ids", lambda value: value.reverse()),
+            ("gamma", lambda value: 0.1),
+            ("q_vector", lambda value: value.__setitem__(0, value[0] + 0.01)),
+            ("normalization", lambda value: value.__setitem__("policy_value", value["policy_value"] + 1.0)),
+            ("draw_uniform", lambda value: 0.99),
+            ("selected_item_id", lambda value: "a" if value != "a" else "b"),
+            ("selected_q", lambda value: value / 2.0),
+        )
+        import copy
+
+        for field, mutate in mutations:
+            tampered = copy.deepcopy(record)
+            original = tampered[field]
+            replacement = mutate(original)
+            if replacement is not None:
+                tampered[field] = replacement
+            self.assertFalse(replay_pre_reveal_draw(tampered).passed, field)
 
     def test_05_sampling_policy_signature_has_no_outcome_input(self) -> None:
         parameters = inspect.signature(policy_probabilities).parameters
@@ -279,6 +330,107 @@ class StatisticalFeasibilityTests(unittest.TestCase):
                 Path(first_result["machine_json"]).read_bytes(),
                 Path(second_result["machine_json"]).read_bytes(),
             )
+
+    def test_19b_machine_arm_ids_are_unique_per_gamma(self) -> None:
+        arms = development_arms((0.1, 0.5))
+        self.assertEqual(len({arm.name for arm in arms}), len(arms))
+        self.assertEqual(
+            {arm.conceptual_label for arm in arms},
+            {"A_uniform_no_cv", "B_uniform_cv", "C_score_no_cv", "D_score_cv"},
+        )
+
+    def test_19c_monotonicity_status_is_explicit(self) -> None:
+        population = generate_fixture("all_correct", 5, 1)
+        audit = {
+            "wealth_steps": (WealthStep(1.0, 0.0),),
+            "warnings": [], "observations": 1, "errors_observed": 0,
+            "min_q": 0.2, "max_importance_weight": 1.0, "q_replay_passed": True,
+        }
+        configuration = SmokeConfig(population_size=5, budget=5, ordinary_replicates=1)
+        with patch(
+            "development.statistical_feasibility.run.evaluate_running_bound",
+            side_effect=MonotonicityFailure("test monotonicity failure"),
+        ):
+            failed = _record_for_lambda("fixture", 0, population, ArmSpec("A", "uniform", False, None), "a", audit, 0.1, configuration)
+        self.assertEqual(failed["monotonicity_status"], "failed")
+        support_audit = dict(audit)
+        support_audit["wealth_steps"] = (WealthStep(1.0, 0.0, (SupportTerm("i", 0, 1.0, 1.0, -1.0, 1.0, -2.0),)),)
+        support = _record_for_lambda("fixture", 0, population, ArmSpec("A", "uniform", False, None), "b", support_audit, 0.5, configuration)
+        self.assertEqual(support["monotonicity_status"], "not_evaluated")
+        numerical_audit = dict(audit)
+        numerical_audit["wealth_steps"] = (WealthStep(float("nan"), 0.0),)
+        numerical = _record_for_lambda("fixture", 0, population, ArmSpec("A", "uniform", False, None), "c", numerical_audit, 0.1, configuration)
+        self.assertEqual(numerical["monotonicity_status"], "not_evaluated")
+        passed = _record_for_lambda("fixture", 0, population, ArmSpec("A", "uniform", False, None), "d", audit, 0.1, configuration)
+        self.assertEqual(passed["monotonicity_status"], "passed")
+
+    def test_19d_git_provenance_resolves_directory_worktree_and_detached(self) -> None:
+        sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "normal"
+            (root / ".git" / "refs" / "heads").mkdir(parents=True)
+            (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+            (root / ".git" / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+            normal = inspect_git_provenance(root)
+            self.assertEqual(normal["head"], sha)
+            self.assertEqual(normal["branch"], "main")
+            self.assertFalse(normal["detached"])
+            worktree = Path(temporary) / "worktree"
+            metadata = Path(temporary) / "metadata"
+            (metadata / "refs" / "heads").mkdir(parents=True)
+            worktree.mkdir()
+            (worktree / ".git").write_text("gitdir: ../metadata\n", encoding="utf-8")
+            (metadata / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+            (metadata / "refs" / "heads" / "feature").write_text(sha + "\n", encoding="utf-8")
+            linked = inspect_git_provenance(worktree)
+            self.assertEqual(linked["head"], sha)
+            self.assertEqual(linked["branch"], "feature")
+            detached_root = Path(temporary) / "detached"
+            (detached_root / ".git").mkdir(parents=True)
+            (detached_root / ".git" / "HEAD").write_text(sha + "\n", encoding="utf-8")
+            detached = inspect_git_provenance(detached_root)
+            self.assertEqual(detached["head"], sha)
+            self.assertTrue(detached["detached"])
+            malformed_root = Path(temporary) / "malformed"
+            malformed_root.mkdir()
+            (malformed_root / ".git").write_text("not a gitdir\n", encoding="utf-8")
+            malformed = inspect_git_provenance(malformed_root)
+            self.assertIsNone(malformed["head"])
+            self.assertIn("malformed", malformed["warning"])
+
+    def test_19e_selection_order_is_hash_seed_independent(self) -> None:
+        code = (
+            "import json; from development.statistical_feasibility.core import ArmSpec; "
+            "from development.statistical_feasibility.scenarios import generate_fixture; "
+            "from development.statistical_feasibility.run import simulate_audit; "
+            "p=generate_fixture('tied_score', 20, 31); "
+            "a=simulate_audit(p, ArmSpec('C','score_informed',False,0.1), 5, 1e-6, 71); "
+            "print(json.dumps(a['selected_item_ids_in_selection_order']))"
+        )
+        outputs = []
+        for hash_seed in ("1", "2"):
+            environment = dict(os.environ, PYTHONHASHSEED=hash_seed)
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", code],
+                cwd=Path(__file__).resolve().parents[1],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            outputs.append(completed.stdout)
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_19f_artifact_replay_uses_json_only_and_tamper_fails(self) -> None:
+        config = SmokeConfig(population_size=12, budget=4, ordinary_replicates=1, gammas=(0.1,), lambdas=(0.1,))
+        with tempfile.TemporaryDirectory() as output:
+            result = run_smoke(Path(output), config)
+            self.assertEqual(replay_artifact(Path(result["machine_json"]))["failure_count"], 0)
+            document = json.loads(Path(result["machine_json"]).read_text(encoding="utf-8"))
+            document["audits"][0]["trace"][0]["pre_reveal"]["draw_uniform"] = 0.999999
+            tampered_path = Path(output) / "tampered.json"
+            tampered_path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertGreater(replay_artifact(tampered_path)["failure_count"], 0)
 
     def test_20_default_outputs_are_outside_repository(self) -> None:
         output = default_output_directory()

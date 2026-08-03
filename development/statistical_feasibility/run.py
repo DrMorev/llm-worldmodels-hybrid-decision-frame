@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import asdict
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -20,6 +19,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from .betting import (
     ControlledNumericalFailure,
     EmptyConfidenceSet,
+    MonotonicityFailure,
     SupportAdmissibilityFailure,
     SupportTerm,
     WealthStep,
@@ -29,11 +29,10 @@ from .betting import (
 from .core import ArmSpec, FinitePopulation, SmokeConfig, development_arms, digest_rows, stable_seed
 from . import DEVELOPMENT_ONLY_NOTICE, DEV_CODE_VERSION
 from .sampling import (
-    draw_item,
     policy_probabilities,
-    remaining_digest,
-    score_digest,
-    vector_digest,
+    replay_pre_reveal_draw,
+    select_item_from_variate,
+    serialize_pre_reveal_draw,
 )
 from .scenarios import DETERMINISTIC_FIXTURES, ORDINARY_FIXTURES, generate_fixture
 
@@ -42,37 +41,77 @@ class InvalidDevelopmentRun(RuntimeError):
     pass
 
 
-def _state_digest(state: object) -> str:
-    return hashlib.sha256(repr(state).encode("utf-8")).hexdigest()
-
-
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _git_state(repository_root: Path) -> Dict[str, str]:
-    git_dir = repository_root / ".git"
-    result = {"branch": "unknown", "head": "unknown"}
-    if not git_dir.is_dir():
-        return result
-    head_text = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-    if head_text.startswith("ref: "):
-        reference = head_text[5:]
-        result["branch"] = reference.rsplit("/", 1)[-1]
-        loose_ref = git_dir / Path(reference)
-        if loose_ref.exists():
-            result["head"] = loose_ref.read_text(encoding="utf-8").strip()
+def _resolve_git_directory(repository_root: Path) -> Path:
+    """Resolve a normal ``.git`` directory or a linked-worktree gitdir file."""
+
+    marker = repository_root / ".git"
+    if marker.is_dir():
+        return marker
+    if not marker.is_file():
+        raise FileNotFoundError(f"Git metadata marker is absent: {marker}")
+    content = marker.read_text(encoding="utf-8").strip()
+    if not content.startswith("gitdir: "):
+        raise ValueError("malformed .git file: expected 'gitdir: <path>'")
+    target = Path(content[len("gitdir: ") :])
+    git_directory = target if target.is_absolute() else (marker.parent / target).resolve()
+    if not git_directory.is_dir():
+        raise FileNotFoundError(f"linked-worktree gitdir is unavailable: {git_directory}")
+    return git_directory
+
+
+def _read_git_reference(git_directory: Path, reference: str) -> Optional[str]:
+    loose_reference = git_directory / Path(reference)
+    if loose_reference.is_file():
+        value = loose_reference.read_text(encoding="utf-8").strip()
+        return value or None
+    packed_references = git_directory / "packed-refs"
+    if packed_references.is_file():
+        for line in packed_references.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith(("#", "^")):
+                try:
+                    sha, ref_name = line.split(" ", 1)
+                except ValueError:
+                    continue
+                if ref_name == reference:
+                    return sha
+    return None
+
+
+def inspect_git_provenance(repository_root: Path) -> Dict[str, object]:
+    """Read local Git metadata without a network operation or mutable Git call."""
+
+    result: Dict[str, object] = {
+        "head": None,
+        "branch": None,
+        "detached": None,
+        "warning": None,
+    }
+    try:
+        git_directory = _resolve_git_directory(repository_root)
+        head_text = (git_directory / "HEAD").read_text(encoding="utf-8").strip()
+        if head_text.startswith("ref: "):
+            reference = head_text[5:]
+            head = _read_git_reference(git_directory, reference)
+            if not head:
+                raise ValueError(f"HEAD reference cannot be resolved: {reference}")
+            result["head"] = head
+            result["branch"] = (
+                reference[len("refs/heads/") :]
+                if reference.startswith("refs/heads/")
+                else reference
+            )
+            result["detached"] = False
+        elif len(head_text) == 40 and all(character in "0123456789abcdefABCDEF" for character in head_text):
+            result["head"] = head_text
+            result["detached"] = True
         else:
-            packed_refs = git_dir / "packed-refs"
-            if packed_refs.exists():
-                for line in packed_refs.read_text(encoding="utf-8").splitlines():
-                    if line and not line.startswith(("#", "^")):
-                        sha, ref_name = line.split(" ", 1)
-                        if ref_name == reference:
-                            result["head"] = sha
-                            break
-    else:
-        result["head"] = head_text
+            raise ValueError("malformed HEAD metadata")
+    except (OSError, ValueError) as error:
+        result["warning"] = f"Git provenance unavailable: {error}"
     return result
 
 
@@ -123,6 +162,7 @@ def simulate_audit(
     oracle = population.hidden_outcomes()
     rng = random.Random(rng_seed)
     selected_ids = set()
+    selection_order: List[str] = []
     beta_history: List[Tuple[float, float]] = []
     wealth_steps: List[WealthStep] = []
     trace = []
@@ -139,24 +179,6 @@ def simulate_audit(
         probabilities, normalization = policy_probabilities(
             arm.policy, remaining, scores, arm.gamma
         )
-        replay_probabilities, replay_normalization = policy_probabilities(
-            arm.policy, tuple(remaining), scores, arm.gamma
-        )
-        replay_passed = (
-            tuple(replay_probabilities.items()) == tuple(probabilities.items())
-            and replay_normalization == normalization
-        )
-        q_replay_passed = q_replay_passed and replay_passed
-        pre_reveal = {
-            "remaining_count": len(remaining),
-            "remaining_ids_digest": remaining_digest(remaining),
-            "score_values_digest": score_digest(remaining, scores),
-            "policy": arm.policy,
-            "gamma": arm.gamma,
-            "normalization": normalization,
-            "q_vector_digest": vector_digest(probabilities),
-            "rng_state_digest": _state_digest(rng.getstate()),
-        }
         expected_score = math.fsum(
             probabilities[item_id] * scores[item_id] for item_id in remaining
         )
@@ -206,15 +228,28 @@ def simulate_audit(
                 ):
                     support_minimum = support_term
 
-        selected = draw_item(probabilities, rng)
+        draw_uniform = rng.random()
+        selected = select_item_from_variate(probabilities, draw_uniform)
         if selected in selected_ids:
             raise InvalidDevelopmentRun("duplicate item selection")
         selected_ids.add(selected)
+        selection_order.append(selected)
+        pre_reveal = serialize_pre_reveal_draw(
+            step=step_number,
+            remaining_item_ids=remaining,
+            scores=scores,
+            sampling_policy=arm.policy,
+            gamma=arm.gamma,
+            probabilities=probabilities,
+            normalization=normalization,
+            draw_uniform=draw_uniform,
+            selected_item_id=selected,
+        )
+        replay = replay_pre_reveal_draw(pre_reveal)
+        q_replay_passed = q_replay_passed and replay.passed
+        if not replay.passed:
+            raise InvalidDevelopmentRun(f"serialized q replay failed: {replay.reason}")
         selected_probability = probabilities[selected]
-        pre_reveal["selected_item_id"] = selected
-        pre_reveal["selected_probability"] = selected_probability
-        pre_reveal["replay_selected_probability"] = replay_probabilities[selected]
-        pre_reveal["q_replay_passed"] = replay_passed
         control_value = (
             scores[selected] - expected_score if arm.use_control_variate else 0.0
         )
@@ -268,8 +303,8 @@ def simulate_audit(
 
     return {
         "rng_seed": rng_seed,
-        "selected_item_ids": list(selected_ids),
-        "selection_order": [row["pre_reveal"]["selected_item_id"] for row in trace],
+        "selected_item_ids_in_selection_order": selection_order,
+        "selection_order": selection_order,
         "trace": trace,
         "wealth_steps": wealth_steps,
         "observations": budget,
@@ -303,9 +338,9 @@ def _record_for_lambda(
         coverage = upper_bound + config.inversion_tolerance >= population.true_prevalence
         status = "valid"
         warning_rows = list(audit["warnings"])
-        monotonicity_passed = evaluation.monotonicity_passed
+        monotonicity_status = evaluation.monotonicity_status
         min_multiplier = evaluation.min_multiplier
-        negative_count = evaluation.negative_multiplier_count
+        multiplier_failure_present = False
         final_log_wealth = {
             "candidate_g_0": evaluation.final_log_wealth_g0,
             "candidate_g_1": evaluation.final_log_wealth_g1,
@@ -316,33 +351,43 @@ def _record_for_lambda(
         coverage = False
         status = "empty_confidence_set"
         warning_rows = list(audit["warnings"]) + [str(error)]
-        monotonicity_passed = True
+        monotonicity_status = "not_evaluated"
         min_multiplier = None
-        negative_count = 0
+        multiplier_failure_present = False
         final_log_wealth = {}
     except SupportAdmissibilityFailure as error:
         upper_bound = None
         coverage = False
         status = "invalid_support_admissibility"
         warning_rows = list(audit["warnings"]) + [str(error)]
-        monotonicity_passed = True
+        monotonicity_status = "not_evaluated"
         min_multiplier = None
-        negative_count = 1
+        multiplier_failure_present = True
+        final_log_wealth = {}
+    except MonotonicityFailure as error:
+        upper_bound = None
+        coverage = False
+        status = "invalid_monotonicity"
+        warning_rows = list(audit["warnings"]) + [str(error)]
+        monotonicity_status = "failed"
+        min_multiplier = None
+        multiplier_failure_present = False
         final_log_wealth = {}
     except ControlledNumericalFailure as error:
         upper_bound = None
         coverage = False
         status = "invalid"
         warning_rows = list(audit["warnings"]) + [str(error)]
-        monotonicity_passed = "monotone" not in str(error)
+        monotonicity_status = "not_evaluated"
         min_multiplier = None
-        negative_count = int("negative wealth multiplier" in str(error))
+        multiplier_failure_present = False
         final_log_wealth = {}
     return {
         "code_version": DEV_CODE_VERSION,
         "fixture": fixture,
         "replicate": replicate,
         "arm": arm.name,
+        "conceptual_arm": arm.conceptual_label,
         "lambda": fixed_lambda,
         "gamma": arm.gamma,
         "audit_id": audit_id,
@@ -354,10 +399,10 @@ def _record_for_lambda(
         "minimum_q": audit["min_q"],
         "maximum_importance_weight": audit["max_importance_weight"],
         "minimum_wealth_multiplier": min_multiplier,
-        "negative_multiplier_count": negative_count,
+        "multiplier_failure_present": multiplier_failure_present,
         "final_log_wealth": final_log_wealth,
         "q_replay_passed": audit["q_replay_passed"],
-        "monotonicity_passed": monotonicity_passed,
+        "monotonicity_status": monotonicity_status,
         "warnings": warning_rows,
         "validity_status": status,
     }
@@ -366,7 +411,13 @@ def _record_for_lambda(
 def _group_records(records: Sequence[dict]) -> List[dict]:
     grouped: Dict[Tuple[object, ...], List[dict]] = {}
     for record in records:
-        key = (record["fixture"], record["arm"], record["lambda"], record["gamma"])
+        key = (
+            record["fixture"],
+            record["arm"],
+            record["conceptual_arm"],
+            record["lambda"],
+            record["gamma"],
+        )
         grouped.setdefault(key, []).append(record)
     rows = []
     for key in sorted(grouped, key=lambda value: tuple("" if part is None else str(part) for part in value)):
@@ -384,8 +435,9 @@ def _group_records(records: Sequence[dict]) -> List[dict]:
             {
                 "fixture": key[0],
                 "arm": key[1],
-                "lambda": key[2],
-                "gamma": key[3],
+                "conceptual_arm": key[2],
+                "lambda": key[3],
+                "gamma": key[4],
                 "runs": len(group),
                 "empirical_marginal_coverage": math.fsum(bool(row["coverage_indicator"]) for row in group) / len(group),
                 "mean_upper_bound": statistics.fmean(bounds) if bounds else "",
@@ -394,7 +446,12 @@ def _group_records(records: Sequence[dict]) -> List[dict]:
                 "zero_event_fraction": math.fsum(row["errors_observed"] == 0 for row in group) / len(group),
                 "minimum_q": min(row["minimum_q"] for row in group),
                 "maximum_importance_weight": max(row["maximum_importance_weight"] for row in group),
-                "negative_multiplier_count": sum(row["negative_multiplier_count"] for row in group),
+                "records_with_multiplier_failure": sum(
+                    bool(row["multiplier_failure_present"]) for row in group
+                ),
+                "records_with_multiplier_failure_proportion": math.fsum(
+                    bool(row["multiplier_failure_present"]) for row in group
+                ) / len(group),
                 "q_replay_failures": sum(not row["q_replay_passed"] for row in group),
                 "empty_confidence_set_count": empty_count,
                 "empty_confidence_set_proportion": empty_count / len(group),
@@ -402,8 +459,11 @@ def _group_records(records: Sequence[dict]) -> List[dict]:
                     row["validity_status"] == "invalid_support_admissibility"
                     for row in group
                 ),
-                "inversion_failures": sum(
+                "inversion_or_numerical_failures": sum(
                     row["validity_status"] == "invalid" for row in group
+                ),
+                "monotonicity_failures": sum(
+                    row["monotonicity_status"] == "failed" for row in group
                 ),
             }
         )
@@ -423,6 +483,8 @@ def _write_report(path: Path, rows: Sequence[dict], runtime_seconds: float) -> N
         "",
         f"Runtime seconds: {runtime_seconds:.6f}",
         "Empirical coverage below is marginal per development group, not confirmatory evidence.",
+        "Exit code 0 means this development run completed; it does not pass a scientific or preregistered coverage gate.",
+        "Multiplier-failure counts are result-record counts; their denominator is runs in the group.",
         "",
     ]
     for row in rows:
@@ -431,6 +493,7 @@ def _write_report(path: Path, rows: Sequence[dict], runtime_seconds: float) -> N
                 (
                     f"fixture={row['fixture']}",
                     f"arm={row['arm']}",
+                    f"conceptual_arm={row['conceptual_arm']}",
                     f"lambda={row['lambda']}",
                     f"gamma={row['gamma']}",
                     f"coverage={row['empirical_marginal_coverage']:.6f}",
@@ -440,17 +503,71 @@ def _write_report(path: Path, rows: Sequence[dict], runtime_seconds: float) -> N
                     f"zero_event_fraction={row['zero_event_fraction']:.6f}",
                     f"min_q={row['minimum_q']:.12g}",
                     f"max_importance={row['maximum_importance_weight']:.12g}",
-                    f"negative_multipliers={row['negative_multiplier_count']}",
+                    f"records_with_multiplier_failure={row['records_with_multiplier_failure']}",
+                    f"records_with_multiplier_failure_proportion={row['records_with_multiplier_failure_proportion']:.6f}",
                     f"q_replay_failures={row['q_replay_failures']}",
                     f"empty_confidence_sets={row['empty_confidence_set_count']}",
                     f"empty_confidence_set_proportion={row['empty_confidence_set_proportion']:.6f}",
                     f"support_admissibility_failures={row['support_admissibility_failures']}",
-                    f"inversion_failures={row['inversion_failures']}",
+                    f"inversion_or_numerical_failures={row['inversion_or_numerical_failures']}",
+                    f"monotonicity_failures={row['monotonicity_failures']}",
                 )
             )
         )
     lines.extend(("", DEVELOPMENT_ONLY_NOTICE))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def replay_serialized_audits(document: Mapping[str, object]) -> dict:
+    """Replay every stored draw using only JSON-deserialized artifact content."""
+
+    audits = document.get("audits")
+    if not isinstance(audits, list):
+        raise ValueError("artifact has no audits list")
+    failures = []
+    checked_draws = 0
+    for audit in audits:
+        if not isinstance(audit, Mapping):
+            failures.append({"audit_id": None, "step": None, "reason": "malformed audit"})
+            continue
+        audit_id = audit.get("audit_id")
+        trace = audit.get("trace")
+        if not isinstance(trace, list):
+            failures.append({"audit_id": audit_id, "step": None, "reason": "malformed trace"})
+            continue
+        for row in trace:
+            if not isinstance(row, Mapping):
+                failures.append({"audit_id": audit_id, "step": None, "reason": "malformed trace row"})
+                continue
+            pre_reveal = row.get("pre_reveal")
+            if not isinstance(pre_reveal, Mapping):
+                failures.append({"audit_id": audit_id, "step": row.get("step"), "reason": "missing pre-reveal record"})
+                continue
+            checked_draws += 1
+            replay = replay_pre_reveal_draw(pre_reveal)
+            if not replay.passed:
+                failures.append(
+                    {
+                        "audit_id": audit_id,
+                        "step": row.get("step"),
+                        "reason": replay.reason,
+                    }
+                )
+    return {
+        "checked_audits": len(audits),
+        "checked_draws": checked_draws,
+        "failure_count": len(failures),
+        "failures": failures,
+    }
+
+
+def replay_artifact(path: Path) -> dict:
+    """Load a JSON artifact and replay it without constructing live simulations."""
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        raise ValueError("artifact root must be an object")
+    return replay_serialized_audits(document)
 
 
 def run_smoke(
@@ -488,6 +605,7 @@ def run_smoke(
                         "fixture": fixture,
                         "replicate": replicate,
                         "arm": arm.name,
+                        "conceptual_arm": arm.conceptual_label,
                         "policy": arm.policy,
                         "control_variate": arm.use_control_variate,
                         "gamma": arm.gamma,
@@ -517,7 +635,7 @@ def run_smoke(
     machine_document = {
         "notice": DEVELOPMENT_ONLY_NOTICE,
         "code_version": DEV_CODE_VERSION,
-        "git_state": _git_state(repository_root),
+        "git_provenance": inspect_git_provenance(repository_root),
         "python_version": platform.python_version(),
         "configuration": asdict(config),
         "populations": populations,
@@ -541,8 +659,12 @@ def run_smoke(
             for row in records
         ),
         "q_replay_failures": sum(not row["q_replay_passed"] for row in records),
-        "negative_multiplier_count": sum(row["negative_multiplier_count"] for row in records),
-        "monotonicity_failures": sum(not row["monotonicity_passed"] for row in records),
+        "records_with_multiplier_failure": sum(
+            bool(row["multiplier_failure_present"]) for row in records
+        ),
+        "monotonicity_failures": sum(
+            row["monotonicity_status"] == "failed" for row in records
+        ),
     }
     return {
         "output_directory": str(output_directory),
@@ -570,9 +692,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="optional external output directory; defaults to the OS temporary directory",
     )
+    parser.add_argument(
+        "--replay-artifact",
+        type=Path,
+        default=None,
+        help="replay serialized pre-reveal draws from an existing JSON artifact only",
+    )
     args = parser.parse_args(argv)
-    if not args.smoke:
-        parser.error("only --smoke is supported by this development-only prototype")
+    if bool(args.smoke) == bool(args.replay_artifact):
+        parser.error("choose exactly one of --smoke or --replay-artifact")
+    if args.replay_artifact:
+        try:
+            result = replay_artifact(args.replay_artifact)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"INVALID REPLAY ARTIFACT: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True, indent=2))
+        return 0 if result["failure_count"] == 0 else 2
     print(DEVELOPMENT_ONLY_NOTICE)
     print("Smoke defaults: N=200, B=50, risk=0.05, ordinary replicates=50,")
     print("gamma=(0.10, 0.50), ridge=1e-6, lambda=(0.05, 0.10, 0.25, 0.50).")

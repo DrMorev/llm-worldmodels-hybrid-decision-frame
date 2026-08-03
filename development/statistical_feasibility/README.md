@@ -98,11 +98,35 @@ ordinary stochastic fixture, gamma values `0.10` and `0.50`, ridge `1e-6`, and
 the four fixed lambda values above. These are development defaults, not
 confirmatory selections.
 
+The four entries above are conceptual arms.  Their machine identifiers are
+unique instantiated configurations: the score-informed entries include gamma
+in the identifier (for example, `C_score_no_cv_gamma_0p1`).  Thus the smoke
+run instantiates six configurations, not six scientific factors.
+
 By default, `results.json`, `summary.csv`, and `report.txt` are written to a
 new operating-system temporary directory outside the repository. JSON records
 the full development populations, independently derived arm RNG seeds, and
-per-step pre-reveal reconstruction digests. Replay recomputes and compares the
-entire `q_t` vector; matching only the selected probability is not accepted.
+per-step pre-reveal records: ordered remaining IDs and scores, policy, gamma,
+normalization inputs, the full ordered `q_t` vector, one pre-reveal uniform
+draw variate, and selected ID and probability. Replay uses only those
+serialized values to reconstruct every vector and selection; matching only
+the selected probability is not accepted. A digest is an additional integrity
+field, not a substitute for that reconstruction.
+
+`selection_order` and `selected_item_ids_in_selection_order` mean the actual
+chronological draw sequence. They are not derived from set iteration.
+
+The full smoke run is a development audit run, not a quick unit test. It may
+take several minutes because it enumerates support-wide payoffs, and its JSON
+artifact may exceed 100 MB. Process exit code `0` means the development run
+completed; it does not mean estimator coverage passed a scientific or
+preregistered gate. Empty confidence sets remain coverage failures in their
+coverage denominators even though their numeric bounds are null and excluded
+from valid-bound mean and median summaries.
+
+The report's `records_with_multiplier_failure` is a count of result records
+with a detected support-admissibility multiplier failure; its denominator is
+the group's number of runs. It is not a count of individual negative factors.
 
 ## Empty confidence sets and support-wide admissibility
 
@@ -132,3 +156,29 @@ is positive and all support multipliers have the same candidate mean, the
 smallest enumerated payoff is the worst factor for every candidate evaluated
 later; retaining that item/outcome and the full support count makes repeated
 inversion checks exact rather than a realised-path shortcut.
+
+## Statistical basis and attribution
+
+Shubhanshu Shekhar, Ziyu Xu, Zachary Lipton, Pierre Liang, and Aaditya Ramdas.
+“Risk-limiting Financial Audits via Weighted Sampling without Replacement.”
+Proceedings of the Thirty-Ninth Conference on Uncertainty in Artificial
+Intelligence, PMLR 216:1932–1941, 2023.
+
+Official record: <https://proceedings.mlr.press/v216/shekhar23a.html>
+
+From that paper, this prototype uses the general statistical ingredients of
+finite-population adaptive randomized sampling without replacement,
+importance-weighted observations, betting-based wealth, confidence-sequence
+inversion, finite-population logical bounds, and centred control variates.
+
+This project specializes those ingredients to a binary joint-dangerous-error
+outcome, uniform population weights, and the complement transformation
+`g_i = 1 - y_i` for reporting a one-sided upper bound.
+
+The paper does not establish this prototype's development-only choices: gamma
+mixture values or exact score-informed policy, the fixed-lambda candidate grid,
+the concrete beta estimator/clipping/ridge/history rule, deterministic
+bisection implementation, synthetic fixtures, or its reporting and replay
+schema. No novelty is claimed for the statistical construction. The paper does
+not guarantee benefit from this project's score-informed policy; usefulness is
+empirical and unresolved.

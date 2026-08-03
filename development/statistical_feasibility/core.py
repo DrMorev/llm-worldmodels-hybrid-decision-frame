@@ -58,10 +58,13 @@ class FinitePopulation:
 
 @dataclass(frozen=True)
 class ArmSpec:
+    """One instantiated configuration in the four-arm development design."""
+
     name: str
     policy: str
     use_control_variate: bool
     gamma: Optional[float]
+    conceptual_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,14 +109,27 @@ class SmokeConfig:
 
 def development_arms(gammas: Sequence[float]) -> Tuple[ArmSpec, ...]:
     arms = [
-        ArmSpec("A_uniform_no_cv", "uniform", False, None),
-        ArmSpec("B_uniform_cv", "uniform", True, None),
+        ArmSpec("A_uniform_no_cv", "uniform", False, None, "A_uniform_no_cv"),
+        ArmSpec("B_uniform_cv", "uniform", True, None, "B_uniform_cv"),
     ]
     for gamma in gammas:
+        gamma_identifier = f"{gamma:.12g}".replace(".", "p")
         arms.extend(
             (
-                ArmSpec("C_score_no_cv", "score_informed", False, gamma),
-                ArmSpec("D_score_cv", "score_informed", True, gamma),
+                ArmSpec(
+                    f"C_score_no_cv_gamma_{gamma_identifier}",
+                    "score_informed",
+                    False,
+                    gamma,
+                    "C_score_no_cv",
+                ),
+                ArmSpec(
+                    f"D_score_cv_gamma_{gamma_identifier}",
+                    "score_informed",
+                    True,
+                    gamma,
+                    "D_score_cv",
+                ),
             )
         )
     return tuple(arms)
