@@ -518,8 +518,69 @@ def _write_report(path: Path, rows: Sequence[dict], runtime_seconds: float) -> N
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _authoritative_population_for_audit(
+    document: Mapping[str, object], audit: Mapping[str, object]
+) -> Tuple[List[str], Dict[str, float]]:
+    """Validate and expose the one serialized population referenced by an audit.
+
+    Hidden outcomes participate only in the audit-level digest reconstruction,
+    because that is the representation used when the population was written.
+    They are never used to validate a draw's pre-reveal state.
+    """
+
+    populations = document.get("populations")
+    if not isinstance(populations, list):
+        raise ValueError("artifact has no populations list")
+    required = ("fixture", "replicate", "population_digest")
+    if any(field not in audit for field in required):
+        raise ValueError("audit lacks population identity fields")
+    matches = [
+        population
+        for population in populations
+        if isinstance(population, Mapping)
+        and population.get("fixture") == audit["fixture"]
+        and population.get("replicate") == audit["replicate"]
+        and population.get("population_digest") == audit["population_digest"]
+    ]
+    if len(matches) != 1:
+        raise ValueError("audit does not identify exactly one serialized population")
+    population = matches[0]
+    items = population.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("serialized population has no non-empty items list")
+    try:
+        rows = [
+            (
+                item["item_id"],
+                float(item["score"]).hex(),
+                item["hidden_outcome"],
+                item.get("scenario_label"),
+            )
+            for item in items
+            if isinstance(item, Mapping)
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"malformed serialized population item: {error}") from error
+    if len(rows) != len(items):
+        raise ValueError("serialized population contains a non-object item")
+    recomputed_digest = digest_rows(rows)
+    if recomputed_digest != population["population_digest"]:
+        raise ValueError("serialized population digest mismatch")
+    ordered_ids = [str(row[0]) for row in rows]
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("serialized population has duplicate item IDs")
+    scores = {
+        str(item["item_id"]): float(item["score"])
+        for item in items
+        if isinstance(item, Mapping)
+    }
+    if any(not math.isfinite(score) or not 0.0 <= score <= 1.0 for score in scores.values()):
+        raise ValueError("serialized population has invalid observable score")
+    return ordered_ids, scores
+
+
 def replay_serialized_audits(document: Mapping[str, object]) -> dict:
-    """Replay every stored draw using only JSON-deserialized artifact content."""
+    """Replay draws against their authoritative serialized audit populations."""
 
     audits = document.get("audits")
     if not isinstance(audits, list):
@@ -531,11 +592,22 @@ def replay_serialized_audits(document: Mapping[str, object]) -> dict:
             failures.append({"audit_id": None, "step": None, "reason": "malformed audit"})
             continue
         audit_id = audit.get("audit_id")
+        try:
+            remaining, authoritative_scores = _authoritative_population_for_audit(
+                document, audit
+            )
+        except ValueError as error:
+            failures.append({"audit_id": audit_id, "step": None, "reason": str(error)})
+            continue
         trace = audit.get("trace")
         if not isinstance(trace, list):
             failures.append({"audit_id": audit_id, "step": None, "reason": "malformed trace"})
             continue
-        for row in trace:
+        selection_order = audit.get("selection_order")
+        if not isinstance(selection_order, list) or len(selection_order) != len(trace):
+            failures.append({"audit_id": audit_id, "step": None, "reason": "selection-order length mismatch"})
+            continue
+        for position, row in enumerate(trace, start=1):
             if not isinstance(row, Mapping):
                 failures.append({"audit_id": audit_id, "step": None, "reason": "malformed trace row"})
                 continue
@@ -544,6 +616,32 @@ def replay_serialized_audits(document: Mapping[str, object]) -> dict:
                 failures.append({"audit_id": audit_id, "step": row.get("step"), "reason": "missing pre-reveal record"})
                 continue
             checked_draws += 1
+            if row.get("step") != position or pre_reveal.get("step") != position:
+                failures.append({"audit_id": audit_id, "step": row.get("step"), "reason": "non-chronological step record"})
+                continue
+            recorded_ids = pre_reveal.get("remaining_item_ids")
+            recorded_scores = pre_reveal.get("remaining_scores")
+            if not isinstance(recorded_ids, list) or recorded_ids != remaining:
+                failures.append({"audit_id": audit_id, "step": position, "reason": "remaining population order mismatch"})
+                continue
+            if not isinstance(recorded_scores, list) or len(recorded_scores) != len(remaining):
+                failures.append({"audit_id": audit_id, "step": position, "reason": "remaining score vector length mismatch"})
+                continue
+            score_mismatch = next(
+                (
+                    item_id
+                    for item_id, score in zip(remaining, recorded_scores)
+                    if float(score).hex() != authoritative_scores[item_id].hex()
+                ),
+                None,
+            )
+            if score_mismatch is not None:
+                failures.append({"audit_id": audit_id, "step": position, "reason": f"population score mismatch for {score_mismatch}"})
+                continue
+            expected_selected = selection_order[position - 1]
+            if pre_reveal.get("selected_item_id") != expected_selected:
+                failures.append({"audit_id": audit_id, "step": position, "reason": "selection history mismatch"})
+                continue
             replay = replay_pre_reveal_draw(pre_reveal)
             if not replay.passed:
                 failures.append(
@@ -553,6 +651,14 @@ def replay_serialized_audits(document: Mapping[str, object]) -> dict:
                         "reason": replay.reason,
                     }
                 )
+                continue
+            if replay.reconstructed_item_id != expected_selected:
+                failures.append({"audit_id": audit_id, "step": position, "reason": "replayed selection history mismatch"})
+                continue
+            if expected_selected not in remaining:
+                failures.append({"audit_id": audit_id, "step": position, "reason": "duplicate or unknown selected item"})
+                continue
+            remaining.remove(expected_selected)
     return {
         "checked_audits": len(audits),
         "checked_draws": checked_draws,

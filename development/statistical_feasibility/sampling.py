@@ -148,7 +148,8 @@ def _float_token(value: Optional[float]) -> Optional[str]:
     return None if value is None else float(value).hex()
 
 
-def _serialized_digest(record: Mapping[str, Any]) -> str:
+def serialized_pre_reveal_digest(record: Mapping[str, Any]) -> str:
+    """Return the unkeyed integrity digest for one serialized draw record."""
     normalization = record["normalization"]
     payload = repr(
         (
@@ -203,7 +204,7 @@ def serialize_pre_reveal_draw(
         "selected_item_id": selected_item_id,
         "selected_q": float(probabilities[selected_item_id]),
     }
-    record["integrity_digest"] = _serialized_digest(record)
+    record["integrity_digest"] = serialized_pre_reveal_digest(record)
     return record
 
 
@@ -227,7 +228,7 @@ def replay_pre_reveal_draw(
         missing = sorted(required.difference(record))
         if missing:
             return ReplayResult(False, f"missing serialized fields: {', '.join(missing)}")
-        if record["integrity_digest"] != _serialized_digest(record):
+        if record["integrity_digest"] != serialized_pre_reveal_digest(record):
             return ReplayResult(False, "serialized pre-reveal integrity digest mismatch")
         item_ids = list(record["remaining_item_ids"])
         score_values = list(record["remaining_scores"])

@@ -4,6 +4,7 @@ import inspect
 import json
 import math
 import os
+import copy
 from pathlib import Path
 import random
 import shutil
@@ -47,6 +48,7 @@ from development.statistical_feasibility.sampling import (
     draw_item,
     policy_probabilities,
     replay_pre_reveal_draw,
+    serialized_pre_reveal_digest,
     score_informed_probabilities,
     select_item_from_variate,
     serialize_pre_reveal_draw,
@@ -421,16 +423,43 @@ class StatisticalFeasibilityTests(unittest.TestCase):
             outputs.append(completed.stdout)
         self.assertEqual(outputs[0], outputs[1])
 
-    def test_19f_artifact_replay_uses_json_only_and_tamper_fails(self) -> None:
+    def test_19f_artifact_replay_binds_draws_to_serialized_population(self) -> None:
         config = SmokeConfig(population_size=12, budget=4, ordinary_replicates=1, gammas=(0.1,), lambdas=(0.1,))
         with tempfile.TemporaryDirectory() as output:
             result = run_smoke(Path(output), config)
             self.assertEqual(replay_artifact(Path(result["machine_json"]))["failure_count"], 0)
             document = json.loads(Path(result["machine_json"]).read_text(encoding="utf-8"))
-            document["audits"][0]["trace"][0]["pre_reveal"]["draw_uniform"] = 0.999999
-            tampered_path = Path(output) / "tampered.json"
-            tampered_path.write_text(json.dumps(document), encoding="utf-8")
-            self.assertGreater(replay_artifact(tampered_path)["failure_count"], 0)
+            forged = copy.deepcopy(document)
+            audit = next(audit for audit in forged["audits"] if audit["policy"] == "score_informed")
+            record = audit["trace"][0]["pre_reveal"]
+            record["remaining_scores"][0] = 0.75 if record["remaining_scores"][0] != 0.75 else 0.25
+            forged_scores = dict(zip(record["remaining_item_ids"], record["remaining_scores"]))
+            probabilities, normalization = policy_probabilities(
+                record["sampling_policy"], record["remaining_item_ids"], forged_scores, record["gamma"]
+            )
+            record["normalization"] = {
+                "remaining_count": len(record["remaining_item_ids"]),
+                "score_sum": math.fsum(record["remaining_scores"]),
+                "policy_value": normalization,
+            }
+            record["q_vector"] = [probabilities[item_id] for item_id in record["remaining_item_ids"]]
+            record["selected_item_id"] = select_item_from_variate(probabilities, record["draw_uniform"])
+            record["selected_q"] = probabilities[record["selected_item_id"]]
+            audit["selection_order"][0] = record["selected_item_id"]
+            record["integrity_digest"] = serialized_pre_reveal_digest(record)
+            forged_path = Path(output) / "self-consistent-forged-draw.json"
+            forged_path.write_text(json.dumps(forged), encoding="utf-8")
+            forged_replay = replay_artifact(forged_path)
+            self.assertGreater(forged_replay["failure_count"], 0)
+            self.assertIn("population score mismatch", forged_replay["failures"][0]["reason"])
+            digest_tampered = copy.deepcopy(document)
+            digest_tampered["populations"][0]["items"][0]["hidden_outcome"] = 1 - digest_tampered["populations"][0]["items"][0]["hidden_outcome"]
+            digest_path = Path(output) / "population-digest-tampered.json"
+            digest_path.write_text(json.dumps(digest_tampered), encoding="utf-8")
+            self.assertIn(
+                "serialized population digest mismatch",
+                replay_artifact(digest_path)["failures"][0]["reason"],
+            )
 
     def test_20_default_outputs_are_outside_repository(self) -> None:
         output = default_output_directory()

@@ -113,6 +113,21 @@ serialized values to reconstruct every vector and selection; matching only
 the selected probability is not accepted. A digest is an additional integrity
 field, not a substitute for that reconstruction.
 
+Replay treats the serialized audit-level population as authoritative for each
+draw. It recomputes that population's canonical digest, derives its ordered
+item-ID/observable-score mapping, and then checks that each draw's ordered
+remaining IDs and scores are exactly the residual population after earlier
+recorded selections. Only after those checks does it reconstruct normalization,
+the full `q_t` vector, and the selected item. Hidden outcomes are used only for
+the population-digest representation, not for pre-reveal draw validation.
+
+This is deterministic reproducibility and internal-consistency checking
+against the serialized audit population. Its unkeyed digests detect accidental
+or inconsistent corruption; the artifact is not cryptographically
+authenticated against complete malicious rewriting. If release-grade
+authenticity is later required, it needs an external immutable hash or a
+signature, neither of which is implemented here.
+
 `selection_order` and `selected_item_ids_in_selection_order` mean the actual
 chronological draw sequence. They are not derived from set iteration.
 
