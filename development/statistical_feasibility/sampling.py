@@ -263,3 +263,117 @@ def replay_pre_reveal_draw(
         return ReplayResult(True, reconstructed_item_id=selected)
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         return ReplayResult(False, f"invalid serialized pre-reveal record: {exc}")
+
+
+def named_pre_reveal_digest(record: Mapping[str, Any]) -> str:
+    """Integrity digest covering Stage 1 score-channel identities and vectors."""
+
+    payload = repr(
+        (
+            record.get("schema_version"),
+            record.get("integrity_digest"),
+            record.get("sampling_score_key"),
+            record.get("control_variate_score_key"),
+            tuple(_float_token(value) for value in record.get("control_variate_scores", ())),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def serialize_named_pre_reveal_draw(
+    *,
+    step: int,
+    remaining_item_ids: Sequence[str],
+    sampling_score_key: Optional[str],
+    sampling_scores: Mapping[str, float],
+    control_variate_score_key: Optional[str],
+    control_variate_scores: Mapping[str, float],
+    sampling_policy: str,
+    epsilon_samp: Optional[float],
+    probabilities: Mapping[str, float],
+    normalization: float,
+    draw_uniform: float,
+    selected_item_id: str,
+) -> Dict[str, Any]:
+    """Serialize a Stage 1 draw without accepting any hidden generator field."""
+
+    record = serialize_pre_reveal_draw(
+        step=step,
+        remaining_item_ids=remaining_item_ids,
+        scores=sampling_scores,
+        sampling_policy=sampling_policy,
+        gamma=epsilon_samp,
+        probabilities=probabilities,
+        normalization=normalization,
+        draw_uniform=draw_uniform,
+        selected_item_id=selected_item_id,
+    )
+    record.update(
+        {
+            "schema_version": "ppi-stage1-trace-v1",
+            "sampling_score_key": sampling_score_key,
+            "control_variate_score_key": control_variate_score_key,
+            "control_variate_scores": [
+                float(control_variate_scores[item_id])
+                for item_id in remaining_item_ids
+            ],
+        }
+    )
+    record["named_integrity_digest"] = named_pre_reveal_digest(record)
+    return record
+
+
+def replay_named_pre_reveal_draw(
+    record: Mapping[str, Any],
+    authoritative_score_channels: Mapping[str, Mapping[str, float]],
+    expected_remaining_ids: Sequence[str],
+    tolerance: float = 1e-12,
+) -> ReplayResult:
+    """Replay a Stage 1 draw against authoritative observable score channels."""
+
+    try:
+        if record.get("schema_version") != "ppi-stage1-trace-v1":
+            return ReplayResult(False, "unsupported named pre-reveal schema")
+        if record.get("named_integrity_digest") != named_pre_reveal_digest(record):
+            return ReplayResult(False, "named pre-reveal integrity digest mismatch")
+        item_ids = list(record["remaining_item_ids"])
+        if item_ids != list(expected_remaining_ids):
+            return ReplayResult(False, "named replay remaining population mismatch")
+        sampling_key = record.get("sampling_score_key")
+        cv_key = record.get("control_variate_score_key")
+        if sampling_key is not None and sampling_key not in authoritative_score_channels:
+            return ReplayResult(False, "unknown authoritative sampling score channel")
+        if cv_key is not None and cv_key not in authoritative_score_channels:
+            return ReplayResult(False, "unknown authoritative CV score channel")
+        recorded_sampling = list(record["remaining_scores"])
+        expected_sampling = [
+            0.0
+            if sampling_key is None
+            else float(authoritative_score_channels[sampling_key][item_id])
+            for item_id in item_ids
+        ]
+        if len(recorded_sampling) != len(expected_sampling) or any(
+            not _numbers_match(float(recorded), expected, tolerance)
+            for recorded, expected in zip(recorded_sampling, expected_sampling)
+        ):
+            return ReplayResult(False, "authoritative sampling score mismatch")
+        recorded_cv = list(record["control_variate_scores"])
+        expected_cv = [
+            0.0
+            if cv_key is None
+            else float(authoritative_score_channels[cv_key][item_id])
+            for item_id in item_ids
+        ]
+        if len(recorded_cv) != len(expected_cv) or any(
+            not _numbers_match(float(recorded), expected, tolerance)
+            for recorded, expected in zip(recorded_cv, expected_cv)
+        ):
+            return ReplayResult(False, "authoritative control-variate score mismatch")
+        base_replay = replay_pre_reveal_draw(record, tolerance)
+        if not base_replay.passed:
+            return base_replay
+        return ReplayResult(
+            True, reconstructed_item_id=base_replay.reconstructed_item_id
+        )
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        return ReplayResult(False, f"invalid named pre-reveal record: {error}")

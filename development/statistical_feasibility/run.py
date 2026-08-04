@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import asdict
+import hashlib
 import json
 import math
 from pathlib import Path
 import platform
 import random
+import re
 import statistics
 import sys
 import tempfile
@@ -25,16 +27,45 @@ from .betting import (
     WealthStep,
     estimate_beta,
     evaluate_running_bound,
+    evaluate_running_mixture_bound,
 )
-from .core import ArmSpec, FinitePopulation, SmokeConfig, development_arms, digest_rows, stable_seed
-from . import DEVELOPMENT_ONLY_NOTICE, DEV_CODE_VERSION
+from .core import (
+    ArmSpec,
+    FinitePopulation,
+    NamedFinitePopulation,
+    ObservableScoreItem,
+    SmokeConfig,
+    Stage1ArmSpec,
+    Stage1Config,
+    development_arms,
+    digest_rows,
+    stable_seed,
+    stage1_arms,
+)
+from . import DEVELOPMENT_ONLY_NOTICE, DEV_CODE_VERSION, STAGE1_CODE_VERSION
+from .proxies import (
+    ObservableCaseOutputs,
+    compute_confidence_margin,
+    frozen_transformation_bank,
+    observable_outputs_digest,
+    ppi_from_observable_outputs,
+    score_channel_digest,
+)
 from .sampling import (
     policy_probabilities,
+    replay_named_pre_reveal_draw,
     replay_pre_reveal_draw,
     select_item_from_variate,
+    serialize_named_pre_reveal_draw,
     serialize_pre_reveal_draw,
 )
-from .scenarios import DETERMINISTIC_FIXTURES, ORDINARY_FIXTURES, generate_fixture
+from .scenarios import (
+    DETERMINISTIC_FIXTURES,
+    ORDINARY_FIXTURES,
+    generate_fixture,
+    generate_stage1_population,
+    permute_ppi_within_observable_strata,
+)
 
 
 class InvalidDevelopmentRun(RuntimeError):
@@ -673,7 +704,847 @@ def replay_artifact(path: Path) -> dict:
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
         raise ValueError("artifact root must be an object")
+    if document.get("schema_version") in {
+        "ppi-stage1-replay-v1",
+        "ppi-stage1-replay-v2",
+    }:
+        return replay_stage1_artifact_document(document)
     return replay_serialized_audits(document)
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        + "\n"
+    ).encode("utf-8")
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _stage1_population_record(generated: object, replicate: int, seed: int) -> dict:
+    population = generated.population
+    score_channels = population.all_observable_scores()
+    output_rows = [asdict(row) for row in generated.observable_outputs]
+    items = []
+    outcomes = population.hidden_outcomes()
+    for item in population.items:
+        items.append(
+            {
+                "item_id": item.item_id,
+                "observable_scores": dict(item.score_channels),
+                "hidden_outcome": outcomes[item.item_id],
+            }
+        )
+    population_digest = digest_rows(
+        (
+            row["item_id"],
+            tuple(
+                (key, float(row["observable_scores"][key]).hex())
+                for key in sorted(row["observable_scores"])
+            ),
+            row["hidden_outcome"],
+        )
+        for row in items
+    )
+    return {
+        "scenario_id": population.scenario_id,
+        "replicate_id": replicate,
+        "seed": seed,
+        "population_digest": population_digest,
+        "observable_score_digests": {
+            key: score_channel_digest(score_channels[key]) for key in sorted(score_channels)
+        },
+        "observable_outputs_digest": observable_outputs_digest(generated.observable_outputs),
+        "items": items,
+        "observable_outputs": output_rows,
+        "scenario_manifest": generated.scenario_manifest,
+        "collider_diagnostic": generated.collider_diagnostic,
+        "component_evaluation_count": generated.component_evaluation_count,
+        "identity_sentinel_passed": generated.identity_sentinel_passed,
+        "structural_invariance_passed": generated.structural_invariance_passed,
+    }
+
+
+def simulate_named_audit(
+    population: NamedFinitePopulation,
+    arm: Stage1ArmSpec,
+    budget: int,
+    ridge: float,
+    rng_seed: int,
+) -> dict:
+    """Audit from named observable score channels; hidden outcomes enter only at reveal."""
+
+    arm.validate()
+    if budget > population.size:
+        raise InvalidDevelopmentRun("budget exceeds named population size")
+    remaining = list(population.item_ids())
+    channels = population.all_observable_scores()
+    zero_scores = {item_id: 0.0 for item_id in remaining}
+    sampling_scores = (
+        zero_scores
+        if arm.sampling_score_key is None
+        else channels[arm.sampling_score_key]
+    )
+    cv_scores = (
+        zero_scores
+        if arm.control_variate_score_key is None
+        else channels[arm.control_variate_score_key]
+    )
+    oracle = population.hidden_outcomes()
+    rng = random.Random(rng_seed)
+    beta_history: List[Tuple[float, float]] = []
+    wealth_steps: List[WealthStep] = []
+    trace: List[dict] = []
+    selection_order: List[str] = []
+    observed_errors = 0
+    observed_complements = 0
+    min_q = math.inf
+    max_importance_weight = 0.0
+    warnings: List[str] = []
+
+    for step_number in range(1, budget + 1):
+        probabilities, normalization = policy_probabilities(
+            arm.sampling_policy,
+            remaining,
+            sampling_scores,
+            arm.epsilon_samp,
+        )
+        expected_cv = math.fsum(
+            probabilities[item_id] * cv_scores[item_id] for item_id in remaining
+        )
+        if arm.control_variate_score_key is None:
+            beta_estimate = estimate_beta((), ridge)
+            beta_value = 0.0
+        else:
+            beta_estimate = estimate_beta(beta_history, ridge)
+            beta_value = beta_estimate.value
+            if beta_estimate.warning:
+                warnings.append(f"step {step_number}: {beta_estimate.warning}")
+        support_minimum = None
+        support_term_count = 0
+        for item_id in remaining:
+            probability = probabilities[item_id]
+            support_u = (
+                cv_scores[item_id] - expected_cv
+                if arm.control_variate_score_key is not None
+                else 0.0
+            )
+            for support_outcome in (0, 1):
+                support_z = (1 - support_outcome) / (population.size * probability)
+                support_constant = (
+                    support_z + beta_value * support_u + observed_complements / population.size
+                )
+                support_term = SupportTerm(
+                    item_id=item_id,
+                    outcome=support_outcome,
+                    score=cv_scores[item_id],
+                    probability=probability,
+                    control_value=support_u,
+                    beta=beta_value,
+                    constant_term=support_constant,
+                )
+                support_term_count += 1
+                if support_minimum is None or support_constant < support_minimum.constant_term:
+                    support_minimum = support_term
+        draw_uniform = rng.random()
+        selected = select_item_from_variate(probabilities, draw_uniform)
+        if selected in selection_order:
+            raise InvalidDevelopmentRun("duplicate named item selection")
+        pre_reveal = serialize_named_pre_reveal_draw(
+            step=step_number,
+            remaining_item_ids=remaining,
+            sampling_score_key=arm.sampling_score_key,
+            sampling_scores=sampling_scores,
+            control_variate_score_key=arm.control_variate_score_key,
+            control_variate_scores=cv_scores,
+            sampling_policy=arm.sampling_policy,
+            epsilon_samp=arm.epsilon_samp,
+            probabilities=probabilities,
+            normalization=normalization,
+            draw_uniform=draw_uniform,
+            selected_item_id=selected,
+        )
+        replay = replay_named_pre_reveal_draw(pre_reveal, channels, remaining)
+        if not replay.passed:
+            raise InvalidDevelopmentRun(f"named serialized replay failed: {replay.reason}")
+        probability = probabilities[selected]
+        u_value = (
+            cv_scores[selected] - expected_cv
+            if arm.control_variate_score_key is not None
+            else 0.0
+        )
+        outcome = oracle[selected]
+        complement = 1 - outcome
+        importance_weight = 1.0 / (population.size * probability)
+        z_value = complement * importance_weight
+        constant_term = z_value + beta_value * u_value + observed_complements / population.size
+        observed_errors += outcome
+        observed_complements += complement
+        wealth_steps.append(
+            WealthStep(
+                constant_term,
+                observed_complements / population.size,
+                (),
+                support_minimum,
+                support_term_count,
+            )
+        )
+        if arm.control_variate_score_key is not None:
+            beta_history.append((z_value, u_value))
+        selection_order.append(selected)
+        min_q = min(min_q, min(probabilities.values()))
+        max_importance_weight = max(max_importance_weight, importance_weight)
+        trace.append(
+            {
+                "step": step_number,
+                "pre_reveal": pre_reveal,
+                "revealed_outcome": outcome,
+                "complement": complement,
+                "importance_weight": importance_weight,
+                "z_complement": z_value,
+                "expected_control_variate_under_q": expected_cv,
+                "u": u_value,
+                "beta": beta_value,
+                "beta_covariance": beta_estimate.covariance,
+                "beta_variance": beta_estimate.variance,
+                "cumulative_complements_before": observed_complements - complement,
+                "constant_term": constant_term,
+                "logical_complement_lower": observed_complements / population.size,
+                "support_term_count": support_term_count,
+            }
+        )
+        remaining.remove(selected)
+    return {
+        "rng_seed": rng_seed,
+        "selection_order": selection_order,
+        "trace": trace,
+        "wealth_steps": wealth_steps,
+        "observations": budget,
+        "errors_observed": observed_errors,
+        "min_q": min_q,
+        "max_importance_weight": max_importance_weight,
+        "q_replay_passed": True,
+        "warnings": warnings,
+    }
+
+
+def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFinitePopulation, config: Stage1Config) -> dict:
+    status = "valid"
+    upper_bound = None
+    empty = False
+    multiplier_failure = False
+    monotonicity_status = "not_evaluated"
+    warning_rows = list(audit["warnings"])
+    evaluation = None
+    try:
+        evaluation = evaluate_running_mixture_bound(
+            audit["wealth_steps"],
+            config.lambda_grid,
+            config.alpha_cs,
+            config.inversion_tolerance,
+            config.monotonicity_tolerance,
+        )
+        upper_bound = evaluation.upper_error_bound
+        monotonicity_status = evaluation.monotonicity_status
+    except EmptyConfidenceSet as error:
+        status = "empty_confidence_set"
+        empty = True
+        warning_rows.append(str(error))
+    except SupportAdmissibilityFailure as error:
+        status = "invalid_support_admissibility"
+        multiplier_failure = True
+        warning_rows.append(str(error))
+    except MonotonicityFailure as error:
+        status = "invalid_monotonicity"
+        monotonicity_status = "failed"
+        warning_rows.append(str(error))
+    except ControlledNumericalFailure as error:
+        status = "invalid_numerical"
+        warning_rows.append(str(error))
+    return {
+        "validity_status": status,
+        "empty_confidence_set": empty,
+        "final_upper_bound": upper_bound,
+        "coverage_indicator": (
+            upper_bound is not None
+            and upper_bound + config.inversion_tolerance >= population.true_prevalence
+        ),
+        "monotonicity_status": monotonicity_status,
+        "multiplier_failure_present": multiplier_failure,
+        "minimum_wealth_multiplier": None if evaluation is None else evaluation.min_multiplier,
+        "final_log_mixture_wealth": {} if evaluation is None else {
+            "candidate_g_0": evaluation.final_log_wealth_g0,
+            "candidate_g_1": evaluation.final_log_wealth_g1,
+            "reported_lower_g_bound": evaluation.final_log_wealth_at_bound,
+        },
+        "warnings": warning_rows,
+    }
+
+
+def _deserialize_stage1_population(record: Mapping[str, object]) -> Tuple[List[str], Dict[str, Dict[str, float]], Dict[str, int]]:
+    items = record.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("Stage 1 replay population is missing items")
+    ids: List[str] = []
+    channels: Dict[str, Dict[str, float]] = {}
+    outcomes: Dict[str, int] = {}
+    rows = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError("Stage 1 population item is malformed")
+        item_id = str(item["item_id"])
+        if item_id in outcomes:
+            raise ValueError("Stage 1 population has duplicate item IDs")
+        score_row = item.get("observable_scores")
+        if not isinstance(score_row, Mapping):
+            raise ValueError("Stage 1 population lacks named observable scores")
+        ordered_scores = tuple(
+            (str(key), float(score_row[key])) for key in sorted(score_row)
+        )
+        outcome = int(item["hidden_outcome"])
+        if outcome not in (0, 1):
+            raise ValueError("Stage 1 population outcome is not binary")
+        ids.append(item_id)
+        outcomes[item_id] = outcome
+        for key, value in ordered_scores:
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError("Stage 1 authoritative score is invalid")
+            channels.setdefault(key, {})[item_id] = value
+        rows.append((item_id, tuple((key, value.hex()) for key, value in ordered_scores), outcome))
+    if digest_rows(rows) != record.get("population_digest"):
+        raise ValueError("Stage 1 population digest mismatch")
+    for key, expected in record.get("observable_score_digests", {}).items():
+        if key not in channels or score_channel_digest(channels[key]) != expected:
+            raise ValueError(f"Stage 1 observable score digest mismatch: {key}")
+    return ids, channels, outcomes
+
+
+def _validate_stage1_observable_outputs(record: Mapping[str, object], channels: Mapping[str, Mapping[str, float]]) -> None:
+    raw_outputs = record.get("observable_outputs")
+    if not isinstance(raw_outputs, list):
+        raise ValueError("Stage 1 replay population lacks observable outputs")
+    outputs = tuple(ObservableCaseOutputs(**row) for row in raw_outputs)
+    if observable_outputs_digest(outputs) != record.get("observable_outputs_digest"):
+        raise ValueError("Stage 1 observable-output digest mismatch")
+    bank = frozen_transformation_bank()
+    manifest = record.get("scenario_manifest")
+    if not isinstance(manifest, Mapping):
+        raise ValueError("Stage 1 replay population lacks scenario manifest")
+    confidence = manifest.get("confidence_constants")
+    if not isinstance(confidence, Mapping):
+        raise ValueError("Stage 1 manifest lacks confidence constants")
+    expected_items = []
+    for output in outputs:
+        expected_k8 = ppi_from_observable_outputs(output, bank, 8).score
+        expected_k4 = ppi_from_observable_outputs(output, bank, 4).score
+        expected_margin = compute_confidence_margin(
+            output.original_primary_magnitude,
+            output.original_verifier_magnitude,
+            float(confidence["tau_primary"]),
+            float(confidence["tau_verifier"]),
+            float(confidence["normalization_primary"]),
+            float(confidence["normalization_verifier"]),
+        )
+        expected_items.append(
+            ObservableScoreItem(
+                output.item_id,
+                (("ppi_k8", expected_k8), ("ppi_k4", expected_k4), ("confidence_margin", expected_margin)),
+            )
+        )
+    if record.get("scenario_id") == "permuted_ppi":
+        expected_items = list(permute_ppi_within_observable_strata(expected_items, outputs))
+    for item in expected_items:
+        expected_scores = item.scores()
+        if channels["ppi_k8"][item.item_id].hex() != expected_scores["ppi_k8"].hex():
+            raise ValueError("Stage 1 PPI K=8 channel/output inconsistency")
+        if channels["ppi_k4"][item.item_id].hex() != expected_scores["ppi_k4"].hex():
+            raise ValueError("Stage 1 PPI K=4 channel/output inconsistency")
+        if channels["confidence_margin"][item.item_id].hex() != expected_scores["confidence_margin"].hex():
+            raise ValueError("Stage 1 confidence-margin channel/output inconsistency")
+
+
+def _validated_sha256(value: object, field: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _validated_lambda_grid(value: object, field: str) -> Tuple[float, ...]:
+    # Serialized JSON uses a list; the in-memory self-replay path retains the
+    # frozen configuration tuple.  Both preserve ordered numeric semantics.
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(f"{field} must be a non-empty ordered sequence")
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        raise ValueError(f"{field} contains a malformed lambda")
+    grid = tuple(float(item) for item in value)
+    if any(not math.isfinite(item) or not 0.0 < item <= 0.50 for item in grid):
+        raise ValueError(f"{field} contains an inadmissible lambda")
+    if len(set(grid)) != len(grid):
+        raise ValueError(f"{field} contains duplicate lambdas")
+    return grid
+
+
+def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
+    """Replay selected traces only from the serialized Stage 1 artifact."""
+
+    populations = document.get("populations")
+    audits = document.get("audits")
+    if not isinstance(populations, list) or not isinstance(audits, list):
+        raise ValueError("Stage 1 artifact lacks populations or audits")
+    try:
+        configuration = document.get("configuration")
+        if not isinstance(configuration, Mapping):
+            raise ValueError("Stage 1 artifact lacks configuration")
+        configuration_grid = _validated_lambda_grid(
+            configuration.get("lambda_grid"), "configuration lambda_grid"
+        )
+        configuration_digest = _validated_sha256(
+            document.get("lambda_grid_digest"), "configuration lambda_grid_digest"
+        )
+        if configuration_digest != _lambda_grid_digest(configuration_grid):
+            raise ValueError("configuration lambda-grid digest mismatch")
+        bank_record = document.get("transformation_bank")
+        if not isinstance(bank_record, Mapping):
+            raise ValueError("Stage 1 artifact lacks transformation-bank record")
+        bank_digest = _validated_sha256(
+            bank_record.get("digest"), "transformation-bank digest"
+        )
+        if bank_digest != frozen_transformation_bank().digest:
+            raise ValueError("transformation-bank digest does not match the frozen bank")
+    except (TypeError, ValueError) as error:
+        return {
+            "checked_audits": len(audits),
+            "checked_draws": 0,
+            "failure_count": 1,
+            "failures": [{"audit_id": None, "reason": str(error)}],
+        }
+    population_map = {}
+    failures = []
+    for population in populations:
+        try:
+            if not isinstance(population, Mapping):
+                raise ValueError("Stage 1 population record is malformed")
+            key = (population.get("scenario_id"), population.get("replicate_id"))
+            if key in population_map:
+                raise ValueError("duplicate Stage 1 replay population")
+            ids, channels, outcomes = _deserialize_stage1_population(population)
+            _validate_stage1_observable_outputs(population, channels)
+            population_map[key] = (population, ids, channels, outcomes)
+        except (KeyError, TypeError, ValueError) as error:
+            failures.append(
+                {
+                    "audit_id": None,
+                    "reason": f"authoritative population rejected: {error}",
+                }
+            )
+    checked_draws = 0
+    for audit in audits:
+        audit_id = audit.get("audit_id") if isinstance(audit, Mapping) else None
+        try:
+            if not isinstance(audit, Mapping):
+                raise ValueError("malformed Stage 1 audit")
+            key = (audit.get("scenario_id"), audit.get("replicate_id"))
+            if key not in population_map:
+                raise ValueError("Stage 1 audit lacks authoritative population")
+            population, remaining, channels, outcomes = population_map[key]
+            remaining = list(remaining)
+            selection_order = list(audit["selection_order"])
+            trace = list(audit["trace"])
+            if len(selection_order) != len(trace):
+                raise ValueError("Stage 1 selection-order length mismatch")
+            audit_grid = _validated_lambda_grid(
+                audit.get("lambda_grid"), "audit lambda_grid"
+            )
+            audit_digest = _validated_sha256(
+                audit.get("lambda_grid_digest"), "audit lambda_grid_digest"
+            )
+            if audit_grid != configuration_grid:
+                raise ValueError("audit lambda grid differs from configuration grid")
+            if audit_digest != _lambda_grid_digest(audit_grid):
+                raise ValueError("audit lambda-grid digest mismatch")
+            if audit_digest != configuration_digest:
+                raise ValueError("audit lambda-grid digest differs from configuration digest")
+            reconstructed_steps: List[WealthStep] = []
+            observed_complements = 0
+            for position, row in enumerate(trace, start=1):
+                pre_reveal = row["pre_reveal"]
+                replay = replay_named_pre_reveal_draw(pre_reveal, channels, remaining)
+                checked_draws += 1
+                if not replay.passed:
+                    raise ValueError(f"step {position}: {replay.reason}")
+                selected = selection_order[position - 1]
+                if replay.reconstructed_item_id != selected:
+                    raise ValueError(f"step {position}: selection history mismatch")
+                outcome = outcomes[selected]
+                if int(row["revealed_outcome"]) != outcome:
+                    raise ValueError(f"step {position}: revealed outcome mismatch")
+                probabilities = {
+                    item_id: float(value)
+                    for item_id, value in zip(remaining, pre_reveal["q_vector"])
+                }
+                cv_key = pre_reveal.get("control_variate_score_key")
+                expected_cv = math.fsum(
+                    probabilities[item_id] * (0.0 if cv_key is None else channels[cv_key][item_id])
+                    for item_id in remaining
+                )
+                beta = float(row["beta"])
+                probability = probabilities[selected]
+                complement = 1 - outcome
+                u_value = 0.0 if cv_key is None else channels[cv_key][selected] - expected_cv
+                z_value = complement / (len(population["items"]) * probability)
+                constant = z_value + beta * u_value + observed_complements / len(population["items"])
+                support_minimum = None
+                support_count = 0
+                for item_id in remaining:
+                    support_u = 0.0 if cv_key is None else channels[cv_key][item_id] - expected_cv
+                    for possible_outcome in (0, 1):
+                        candidate = SupportTerm(
+                            item_id,
+                            possible_outcome,
+                            0.0 if cv_key is None else channels[cv_key][item_id],
+                            probabilities[item_id],
+                            support_u,
+                            beta,
+                            (1 - possible_outcome) / (len(population["items"]) * probabilities[item_id])
+                            + beta * support_u
+                            + observed_complements / len(population["items"]),
+                        )
+                        support_count += 1
+                        if support_minimum is None or candidate.constant_term < support_minimum.constant_term:
+                            support_minimum = candidate
+                if not math.isclose(constant, float(row["constant_term"]), rel_tol=1e-12, abs_tol=1e-12):
+                    raise ValueError(f"step {position}: mixture wealth input mismatch")
+                observed_complements += complement
+                reconstructed_steps.append(
+                    WealthStep(constant, observed_complements / len(population["items"]), (), support_minimum, support_count)
+                )
+                remaining.remove(selected)
+            expected = audit.get("mixture_result")
+            if not isinstance(expected, Mapping):
+                raise ValueError("selected replay audit lacks a stored mixture result")
+            replayed_status = "valid"
+            replayed_upper = None
+            try:
+                evaluation = evaluate_running_mixture_bound(
+                    reconstructed_steps,
+                    audit_grid,
+                    float(configuration["alpha_cs"]),
+                    float(configuration["inversion_tolerance"]),
+                    float(configuration["monotonicity_tolerance"]),
+                )
+                replayed_upper = evaluation.upper_error_bound
+            except EmptyConfidenceSet:
+                replayed_status = "empty_confidence_set"
+            except SupportAdmissibilityFailure:
+                replayed_status = "invalid_support_admissibility"
+            except MonotonicityFailure:
+                replayed_status = "invalid_monotonicity"
+            except ControlledNumericalFailure:
+                replayed_status = "invalid_numerical"
+            if replayed_status != expected.get("validity_status"):
+                raise ValueError(
+                    "Stage 1 replayed mixture status mismatch: "
+                    f"{replayed_status} != {expected.get('validity_status')}"
+                )
+            if replayed_status == "valid" and not math.isclose(
+                replayed_upper,
+                float(expected["final_upper_bound"]),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                raise ValueError("Stage 1 replayed mixture bound mismatch")
+        except (KeyError, TypeError, ValueError, ControlledNumericalFailure) as error:
+            failures.append({"audit_id": audit_id, "reason": str(error)})
+    return {
+        "checked_audits": len(audits),
+        "checked_draws": checked_draws,
+        "failure_count": len(failures),
+        "failures": failures,
+    }
+
+
+def _lambda_grid_digest(values: Sequence[float]) -> str:
+    return _sha256_bytes(_canonical_json_bytes([float(value).hex() for value in values]))
+
+
+def _manifest_digest(config: Stage1Config, bank_digest: str) -> str:
+    payload = {
+        "configuration": asdict(config),
+        "transformation_bank_digest": bank_digest,
+        "purpose": "development-only Stage 1 plumbing",
+    }
+    return _sha256_bytes(_canonical_json_bytes(payload))
+
+
+def retain_stage1_trace(
+    replicate: int, validity_status: str, q_replay_passed: bool
+) -> bool:
+    """Predeclared trace rule; never consults a contrast or bound direction."""
+
+    return replicate == 0 or validity_status != "valid" or not q_replay_passed
+
+
+def run_ppi_stage1(
+    output_directory: Optional[Path] = None,
+    config: Optional[Stage1Config] = None,
+) -> dict:
+    """Run the bounded Stage 1 vertical slice; never a scientific evaluation."""
+
+    config = config or Stage1Config()
+    config.validate()
+    repository_root = _repository_root()
+    output_directory = output_directory or Path(
+        tempfile.mkdtemp(prefix="llm-worldmodels-ppi-stage1-dev-")
+    )
+    _ensure_external_output(output_directory, repository_root)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    projected_trace_bytes = (
+        len(config.scenario_ids)
+        * len(config.ks)
+        * 5
+        * config.budget
+        * config.population_size
+        * 55
+    )
+    if projected_trace_bytes > config.trace_limit_bytes:
+        raise InvalidDevelopmentRun(
+            f"projected replay trace exceeds configured limit: {projected_trace_bytes}"
+        )
+    started = time.perf_counter()
+    bank = frozen_transformation_bank()
+    manifest_digest = _manifest_digest(config, bank.digest)
+    lambda_digest = _lambda_grid_digest(config.lambda_grid)
+    provenance = inspect_git_provenance(repository_root)
+    compact_records: List[dict] = []
+    replay_populations: Dict[Tuple[str, int], dict] = {}
+    replay_audits: List[dict] = []
+    scenario_counts: Dict[str, int] = {}
+    q_replay_failures = 0
+    total_draws = 0
+    all_q_positive = True
+    all_common_lambda = True
+    constant_uniform_passed = True
+    acceptance_by_scenario: Dict[str, List[Mapping[str, object]]] = {}
+
+    for scenario_id in config.scenario_ids:
+        scenario_counts[scenario_id] = 0
+        for replicate in range(config.replicates):
+            population_seed = stable_seed(
+                config.master_seed, scenario_id, replicate, "stage1-population"
+            )
+            generated = generate_stage1_population(
+                scenario_id, config.population_size, population_seed, config, bank
+            )
+            acceptance_by_scenario.setdefault(scenario_id, []).append(
+                generated.collider_diagnostic
+            )
+            population_record = _stage1_population_record(
+                generated, replicate, population_seed
+            )
+            population = generated.population
+            for k in config.ks:
+                for arm in stage1_arms(k, config.epsilon_samp):
+                    audit_seed = stable_seed(
+                        config.master_seed,
+                        scenario_id,
+                        replicate,
+                        k,
+                        arm.arm_id,
+                        "stage1-audit",
+                    )
+                    audit = simulate_named_audit(
+                        population, arm, config.budget, config.ridge, audit_seed
+                    )
+                    mixture_result = _stage1_mixture_result(audit, population, config)
+                    audit_id = f"{scenario_id}:{replicate}:k{k}:{arm.arm_id}"
+                    retain_trace = retain_stage1_trace(
+                        replicate,
+                        mixture_result["validity_status"],
+                        audit["q_replay_passed"],
+                    )
+                    trace_reference = audit_id if retain_trace else None
+                    if retain_trace:
+                        replay_populations[(scenario_id, replicate)] = population_record
+                        replay_audits.append(
+                            {
+                                "audit_id": audit_id,
+                                "scenario_id": scenario_id,
+                                "replicate_id": replicate,
+                                "k": k,
+                                "arm": asdict(arm),
+                                "rng_seed": audit_seed,
+                                "selection_order": audit["selection_order"],
+                                "trace": audit["trace"],
+                                "lambda_grid": list(config.lambda_grid),
+                                "lambda_grid_digest": lambda_digest,
+                                "mixture_result": mixture_result,
+                            }
+                        )
+                    score_channels = population.all_observable_scores()
+                    component_evaluations = 2 * population.size * (1 + k)
+                    record = {
+                        "schema_version": config.schema_version,
+                        "code_version": STAGE1_CODE_VERSION,
+                        "code_head": provenance["head"],
+                        "development_manifest_digest": manifest_digest,
+                        "scenario_id": scenario_id,
+                        "replicate_id": replicate,
+                        "N": population.size,
+                        "B": config.budget,
+                        "K": k,
+                        "epsilon_samp": arm.epsilon_samp,
+                        "lambda_grid_digest": lambda_digest,
+                        "lambda_grid": list(config.lambda_grid),
+                        "alpha_CS": config.alpha_cs,
+                        "tau_primary": config.tau_primary,
+                        "tau_verifier": config.tau_verifier,
+                        "maximum_generated_candidates": config.maximum_generated_candidates,
+                        "arm_id": arm.arm_id,
+                        "conceptual_arm": arm.conceptual_arm,
+                        "sampling_policy": arm.sampling_policy,
+                        "sampling_score_key": arm.sampling_score_key,
+                        "control_variate_score_key": arm.control_variate_score_key,
+                        "transformation_bank_digest": bank.digest,
+                        "population_digest": population_record["population_digest"],
+                        "observable_score_digests": {
+                            key: score_channel_digest(score_channels[key])
+                            for key in sorted(score_channels)
+                        },
+                        "true_evaluator_prevalence": population.true_prevalence,
+                        "final_upper_bound": mixture_result["final_upper_bound"],
+                        "coverage_indicator_diagnostic_only": mixture_result["coverage_indicator"],
+                        "validity_status": mixture_result["validity_status"],
+                        "empty_confidence_set": mixture_result["empty_confidence_set"],
+                        "zero_event": audit["errors_observed"] == 0,
+                        "discovered_error_count_diagnostic_only": audit["errors_observed"],
+                        "minimum_q": audit["min_q"],
+                        "maximum_importance_weight": audit["max_importance_weight"],
+                        "component_evaluation_count": component_evaluations,
+                        "inference_cost": {
+                            "original_component_evaluations": 2 * population.size,
+                            "incremental_transformed_component_evaluations": 2 * k * population.size,
+                            "oracle_observations": config.budget,
+                            "fixed_oracle_budget_does_not_fix_inference_cost": True,
+                        },
+                        "collider_diagnostic": generated.collider_diagnostic,
+                        "agreement_selection": generated.scenario_manifest[
+                            "agreement_selection"
+                        ],
+                        "selected_replay_trace_reference": trace_reference,
+                        "q_replay_passed": audit["q_replay_passed"],
+                        "mixture_monotonicity_status": mixture_result["monotonicity_status"],
+                        "warnings": mixture_result["warnings"],
+                    }
+                    compact_records.append(record)
+                    scenario_counts[scenario_id] += 1
+                    total_draws += audit["observations"]
+                    q_replay_failures += int(not audit["q_replay_passed"])
+                    all_q_positive = all_q_positive and audit["min_q"] > 0.0
+                    all_common_lambda = all_common_lambda and record["lambda_grid_digest"] == lambda_digest
+                    if scenario_id == "constant_ppi" and arm.conceptual_arm == "SP":
+                        uniform_q = 1.0 / population.size
+                        first_q = audit["trace"][0]["pre_reveal"]["q_vector"]
+                        constant_uniform_passed = constant_uniform_passed and all(
+                            value.hex() == uniform_q.hex() for value in first_q
+                        )
+
+    compact_path = output_directory / "compact_results.jsonl"
+    compact_bytes = b"".join(_canonical_json_bytes(row) for row in compact_records)
+    if len(compact_bytes) > config.compact_limit_bytes:
+        raise InvalidDevelopmentRun("compact Stage 1 output exceeds configured limit")
+    compact_path.write_bytes(compact_bytes)
+    replay_document = {
+        "schema_version": "ppi-stage1-replay-v2",
+        "notice": DEVELOPMENT_ONLY_NOTICE,
+        "code_version": STAGE1_CODE_VERSION,
+        "git_provenance": provenance,
+        "configuration": asdict(config),
+        "lambda_grid_digest": lambda_digest,
+        "development_manifest_digest": manifest_digest,
+        "transformation_bank": {
+            "bank_id": bank.bank_id,
+            "digest": bank.digest,
+            "k4_indices": list(bank.k4_indices),
+            "transformation_ids": [row.transformation_id for row in bank.transformations],
+        },
+        "trace_selection_rule": "replicate 0 for every scenario x arm x K; plus every invalid run and replay failure",
+        "populations": [replay_populations[key] for key in sorted(replay_populations)],
+        "audits": replay_audits,
+    }
+    replay_path = output_directory / "selected_replay_traces.json"
+    replay_bytes = _canonical_json_bytes(replay_document)
+    if len(replay_bytes) > config.trace_limit_bytes:
+        raise InvalidDevelopmentRun("Stage 1 replay traces exceed configured limit")
+    replay_path.write_bytes(replay_bytes)
+    replay_result = replay_stage1_artifact_document(replay_document)
+    if replay_result["failure_count"]:
+        raise InvalidDevelopmentRun("selected Stage 1 trace replay failed")
+    report = {
+        "schema_version": "ppi-stage1-summary-v2",
+        "notice": DEVELOPMENT_ONLY_NOTICE,
+        "scientific_classification_performed": False,
+        "configuration": asdict(config),
+        "development_manifest_digest": manifest_digest,
+        "scenario_run_counts": scenario_counts,
+        "agreement_selection_summary": {
+            scenario_id: {
+                "selection_neutral_null": scenario_id == "no_shared_fragile_mechanism",
+                "acceptance_rates": [
+                    row["acceptance_rate"] for row in diagnostics
+                ],
+                "generated_candidate_counts": [
+                    row["generated_candidate_count"] for row in diagnostics
+                ],
+                "accepted_candidate_counts": [
+                    row["accepted_candidate_count"] for row in diagnostics
+                ],
+            }
+            for scenario_id, diagnostics in sorted(acceptance_by_scenario.items())
+        },
+        "scenario_count": len(scenario_counts),
+        "replicate_count_per_scenario": config.replicates,
+        "arm_configurations_per_replicate": len(config.ks) * 5,
+        "audit_count": len(compact_records),
+        "draw_count": total_draws,
+        "replay_trace_count": len(replay_audits),
+        "q_replay_failures": q_replay_failures,
+        "all_q_positive": all_q_positive,
+        "constant_score_reduced_to_uniform": constant_uniform_passed,
+        "common_lambda_grid_everywhere": all_common_lambda,
+        "invalid_status_count": sum(row["validity_status"].startswith("invalid") for row in compact_records),
+        "empty_confidence_set_count": sum(row["empty_confidence_set"] for row in compact_records),
+        "zero_event_count": sum(row["zero_event"] for row in compact_records),
+        "valid_status_count": sum(row["validity_status"] == "valid" for row in compact_records),
+        "compact_sha256": _sha256_bytes(compact_bytes),
+        "replay_sha256": _sha256_bytes(replay_bytes),
+        "replay_result": replay_result,
+    }
+    summary_path = output_directory / "stage1_summary.json"
+    summary_bytes = _canonical_json_bytes(report)
+    summary_path.write_bytes(summary_bytes)
+    runtime_seconds = time.perf_counter() - started
+    return {
+        "output_directory": str(output_directory),
+        "compact_results": str(compact_path),
+        "selected_replay_traces": str(replay_path),
+        "summary": str(summary_path),
+        "runtime_seconds": runtime_seconds,
+        "compact_size_bytes": len(compact_bytes),
+        "replay_size_bytes": len(replay_bytes),
+        "summary_size_bytes": len(summary_bytes),
+        "compact_sha256": report["compact_sha256"],
+        "replay_sha256": report["replay_sha256"],
+        "summary_sha256": _sha256_bytes(summary_bytes),
+        **{key: report[key] for key in (
+            "scenario_count", "replicate_count_per_scenario", "audit_count", "draw_count",
+            "replay_trace_count", "q_replay_failures", "all_q_positive",
+            "constant_score_reduced_to_uniform", "common_lambda_grid_everywhere",
+            "invalid_status_count", "empty_confidence_set_count", "zero_event_count",
+            "valid_status_count",
+        )},
+    }
 
 
 def run_smoke(
@@ -793,6 +1664,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="run the bounded development-only smoke configuration",
     )
     parser.add_argument(
+        "--ppi-stage1",
+        action="store_true",
+        help="run the bounded development-only PPI Stage 1 plumbing configuration",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -805,8 +1681,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="replay serialized pre-reveal draws from an existing JSON artifact only",
     )
     args = parser.parse_args(argv)
-    if bool(args.smoke) == bool(args.replay_artifact):
-        parser.error("choose exactly one of --smoke or --replay-artifact")
+    selected_modes = sum(
+        bool(value) for value in (args.smoke, args.ppi_stage1, args.replay_artifact)
+    )
+    if selected_modes != 1:
+        parser.error("choose exactly one of --smoke, --ppi-stage1, or --replay-artifact")
     if args.replay_artifact:
         try:
             result = replay_artifact(args.replay_artifact)
@@ -815,6 +1694,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
         print(json.dumps(result, sort_keys=True, indent=2))
         return 0 if result["failure_count"] == 0 else 2
+    if args.ppi_stage1:
+        print(DEVELOPMENT_ONLY_NOTICE)
+        print(
+            "PPI Stage 1 engineering defaults: N=200, B=20, replicates=10, "
+            "K=(8,4), epsilon_samp=0.20, lambda=(0.05,0.10,0.25,0.50)."
+        )
+        try:
+            result = run_ppi_stage1(args.output_dir)
+        except (InvalidDevelopmentRun, ControlledNumericalFailure, ValueError) as error:
+            print(f"INVALID DEVELOPMENT RUN: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True, indent=2))
+        return 0
     print(DEVELOPMENT_ONLY_NOTICE)
     print("Smoke defaults: N=200, B=50, risk=0.05, ordinary replicates=50,")
     print("gamma=(0.10, 0.50), ridge=1e-6, lambda=(0.05, 0.10, 0.25, 0.50).")
