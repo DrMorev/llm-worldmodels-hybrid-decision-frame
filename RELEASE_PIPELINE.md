@@ -14,17 +14,25 @@ This pipeline does not authorize implementation or Git operations by itself.
 
 * Phase 0 repository snapshot and historical baseline reconstruction;
 * Phase 1B development-only statistical feasibility implementation;
-* three independent implementation-audit rounds;
-* ordinary merge of PR #3 at `0aaf49c86dabe42bc04ff5e3d05049c952250577`.
+* three independent Phase 1B implementation-audit rounds;
+* ordinary merge of PR #3 at `0aaf49c86dabe42bc04ff5e3d05049c952250577`;
+* installation and ordinary merge of the four canonical repository documents through PR #4 at `18aaa46c3dab99978f01707d7784624d761669ac`;
+* comparative proxy review and methodological adjudication;
+* designation of `paired_perturbation_instability` as the sole development primary candidate;
+* exclusion of `evidence_path_overlap` from the current experiment;
+* retention of confidence margin as the cheap baseline.
 
 ### In progress
 
-* canonical repository-document synchronization.
+* synchronization of the accepted PPI development method contract into the canonical repository documents.
 
 ### Next gate
 
-* selection and neutral review of one realizable primary proxy;
-* preregistration drafting after the proxy decision.
+* merge the exact method-contract synchronization;
+* issue a separate bounded development-only implementation authorization;
+* implement and validate Stage 1 plumbing before any Stage 2 feasibility sweep or preregistration drafting.
+
+PPI usefulness has not been demonstrated. The primary proxy has not been frozen for confirmatory use. No confirmatory implementation or execution is authorized.
 
 The merged Phase 1B prototype is development machinery. It is not the confirmatory implementation and does not satisfy the preregistration, CI, confirmatory-run, release, or freeze gates.
 
@@ -1089,9 +1097,25 @@ The phase is complete when:
 
 ## 37. Current authorized next step
 
-1. Commit and adopt the four canonical repository documents.
-2. Prepare and review a comparative set of realizable proxy candidates.
-3. Select exactly one primary proxy and define any preregistered secondary proxies.
-4. Draft the preregistration only after that decision.
+1. Complete and merge the canonical PPI development method-contract synchronization.
+2. After that merge, prepare one separately authorized bounded development-only implementation task covering only:
+   * structural PPI generator plumbing;
+   * frozen transformation bank;
+   * confidence-margin baseline;
+   * five development arms;
+   * common equal-weight lambda mixture;
+   * compact sweep summaries;
+   * bounded replay-grade traces;
+   * mandatory negative and falsification controls;
+   * Stage 1 plumbing validation.
+3. Review Stage 1 evidence before authorizing:
+   * Stage 2 development feasibility mapping;
+   * parameter calibration;
+   * proxy freeze;
+   * preregistration drafting.
+4. Draft the preregistration only after:
+   * the designated proxy passes its development gate;
+   * the method parameters required for preregistration are fixed through recorded decisions;
+   * a separate authorization is issued.
 
-This pipeline does not authorize confirmatory implementation, confirmatory execution, repository rename, replacement of the historical root README, creation or exposure of a confirmatory manifest, public release, commit, or push by itself.
+This pipeline does not itself authorize implementation, Stage 1 execution, Stage 2 execution, preregistration approval, confirmatory implementation, confirmatory execution, repository rename, replacement of the historical root README, creation or exposure of a confirmatory manifest, commit, push, merge, or release.

@@ -774,6 +774,36 @@ There must be exactly one primary proxy.
 
 Additional confirmatory proxies, if retained, are secondary.
 
+### Development primary candidate
+
+The sole designated development primary-proxy candidate is:
+
+`paired_perturbation_instability`
+
+It is not yet frozen as the confirmatory primary proxy.
+
+It may enter the preregistration only after passing the accepted development feasibility gate specified in section 53.
+
+### Other candidates
+
+* `evidence_path_overlap` is excluded from the current experiment and retained only as a possible post-release architecture-specific candidate requiring a separate GO.
+* `confidence_floor_margin` is retained as a cheap confirmatory baseline, not as a second primary proxy.
+
+### Comparisons
+
+Primary planned contrast:
+
+* SP vs UP.
+
+Confirmatory secondary contrasts:
+
+* SP vs SM;
+* UP vs UM.
+
+The two confirmatory secondary contrasts use preregistered Holm correction.
+
+All other contrasts are descriptive unless promoted before preregistration through a recorded decision.
+
 Multiple-comparison rule
 
 Confirmatory secondary comparisons must use a preregistered correction.
@@ -785,10 +815,6 @@ Exploratory proxies
 A proxy invented, modified, or selected after seeing confirmatory results must be labelled exploratory.
 
 It cannot determine the primary conclusion.
-
-### Current open decision
-
-The primary proxy has not yet been selected.
 
 ### Reversal condition
 
@@ -1910,20 +1936,453 @@ A new audit finding, a reproducibility failure, or evidence that the accepted im
 
 ---
 
-## 53. Current authorized next step
+## 53. PPI development method contract
 
-1. Commit and adopt the four canonical repository documents.
-2. Prepare a comparative primary-proxy decision packet.
-3. Evaluate candidates against the six-part realizability gate.
-4. Select exactly one primary proxy and, if justified, a small number of preregistered secondary proxies.
-5. Submit the proxy proposal to a neutral methodological review.
-6. Draft the preregistration only after the primary-proxy decision.
+### 53.1 Proxy definition
 
-Not authorized:
+Inside the deterministically defined original agreement region:
 
-* confirmatory implementation;
+```text
+A_i = A_P(x_i) = A_V(x_i)
+```
+
+For a frozen ordered bank of K structurally label-preserving transformations:
+
+```text
+S_PPI(i) =
+    1 - (1 / K) *
+        sum_j I[
+            A_P(T_j(x_i)) =
+            A_V(T_j(x_i)) =
+            A_i
+        ]
+```
+
+The score may use only:
+
+* original primary output;
+* original verifier output;
+* transformed primary outputs;
+* transformed verifier outputs;
+* frozen transformation-bank identity;
+* frozen K.
+
+The following are diagnostic only:
+
+* primary flip rate;
+* verifier flip rate;
+* perturbed disagreement rate.
+
+They must not alter, weight, or replace `S_PPI`.
+
+### 53.2 Generator structure
+
+The accepted minimal development structure is:
+
+* latent canonical state determines truth;
+* robust information is invariant under transformations;
+* fragile surface information is changed by transformations;
+* `H_i in {0,1}` is binary shared-fragile-mechanism membership;
+* `pi_H` is the scenario-cell mixture axis;
+* `pi_H = 0` is a mandatory null mechanism;
+* `pi_H = 1` is the maximally favourable fragile-mechanism condition;
+* stable shared false belief is a separate transformation-invariant mechanism;
+* component-specific error terms remain separate;
+* joint dangerous error and PPI are both derived outcomes;
+* the generator must never sample correctness, joint error, or error probability conditional on completed PPI.
+
+The primary and verifier fragile-feature coefficients must be:
+
+* equal;
+* constant;
+* frozen across development cells.
+
+Variation in fragile-mechanism contribution must occur through `pi_H`, not through separately tuning primary and verifier fragile coefficients.
+
+Required collider diagnostic:
+
+* report the association between component-specific error terms before selection into the agreement region;
+* report it again after selection;
+* report it by scenario cell;
+* do not use it in the endpoint.
+
+This diagnostic exists because conditioning on agreement may induce dependence even when component-specific terms are independent before selection.
+
+### 53.3 Transformation bank and K
+
+The accepted treatment is:
+
+`K8_PRIMARY_K4_SENSITIVITY`
+
+Requirements:
+
+1. canonical state, truth, and robust feature remain exactly invariant;
+2. bank order is frozen;
+3. the K=4 subset is a fixed nested subset identified before outcome inspection;
+4. no transformation may be added, removed, or replaced after observing errors;
+5. bank content and order receive a reproducible digest;
+6. every transformation changes exactly one designated fragile-surface component by the same fixed magnitude;
+7. transformations are mutually non-identical on the development population;
+8. identity is a separate sentinel and is not counted among K.
+
+K=8 is primary because it provides finer score granularity.
+
+K=4 is not statistically invalid merely because it creates five score levels. Equal scores receive equal factual sampling probabilities, and all actual inclusion probabilities remain recorded.
+
+K=4 remains sensitivity only.
+
+### 53.4 Confidence-margin baseline
+
+Population-relative midrank normalization is rejected.
+
+Use:
+
+```text
+m_c(i) =
+    clip(
+        (abs(L_ci) - tau_c) /
+        (M_c - tau_c),
+        0,
+        1
+    )
+```
+
+for `c in {P,V}`, and:
+
+```text
+S_M(i) = 1 - min(m_P(i), m_V(i))
+```
+
+where:
+
+* `L_ci` is the observable original decision magnitude;
+* `tau_c` is the frozen agreement-region confidence threshold;
+* `M_c` is a frozen normalization constant;
+* `M_c > tau_c` is mandatory;
+* `M_c` is selected from reserved development information and fixed once for the study;
+* it is not recomputed by scenario cell or replicate;
+* correctness and hidden mechanism state are forbidden inputs.
+
+Missing, nonfinite, or invalid magnitudes cause an explicit invalid condition.
+
+Any scale-sensitivity check must use a frozen transformation of `L`, `tau`, and `M`. The method does not claim invariance to arbitrary monotone transformations when normalized distances are not preserved.
+
+### 53.5 Development arms
+
+| ID | Sampling | Control variate |
+|---|---|---|
+| U0 | uniform | none |
+| UM | uniform | confidence margin |
+| UP | uniform | PPI |
+| SM | confidence-margin informed | confidence margin |
+| SP | PPI-informed | PPI |
+
+Every nonuniform arm must use:
+
+* predictable probabilities;
+* full support;
+* positive exploration weight;
+* factual recorded inclusion probabilities;
+* the accepted IPW and betting construction.
+
+No prop-MS performance guarantee is inherited.
+
+### 53.6 Lambda aggregation
+
+Let one common frozen finite grid be:
+
+```text
+Lambda = {lambda_1, ..., lambda_m}
+```
+
+The grid must be identical:
+
+* across all arms;
+* across all scenario cells;
+* across all replicates.
+
+For each candidate risk value `q`, construct the existing single-lambda e-process:
+
+```text
+W_t^(lambda)(q)
+```
+
+Define the equal-weight mixture:
+
+```text
+W_mix,t(q) =
+    (1 / m) *
+    sum_{lambda in Lambda} W_t^(lambda)(q)
+```
+
+The confidence set is obtained from:
+
+```text
+C_mix,t =
+    { q in [0,1] :
+      W_mix,t(q) < 1 / alpha_CS }
+```
+
+The existing logical bounds and running-intersection treatment are retained.
+
+Numerical evaluation should use a stable log-sum-exp equivalent.
+
+The following are forbidden:
+
+* choosing one lambda after observing results;
+* allowing lambda or the lambda grid to differ by arm;
+* allowing lambda or the lambda grid to differ by cell;
+* taking the minimum of uncorrected single-lambda bounds;
+* selecting the grid using the direction or magnitude of SP vs UP.
+
+Development may select only the common grid range and resolution.
+
+The development selection criterion must be specified before examining the primary contrast and must include:
+
+* acceptable empirical coverage in every arm;
+* nondegenerate behaviour in UP;
+* numerical stability.
+
+A union-bound construction using `alpha_CS / m` per lambda may be considered only if the equal-weight mixture fails its development validity gate.
+
+There is no automatic fallback.
+
+Using the union-bound alternative requires a separate recorded PM/PI decision before it becomes active.
+
+No mathematical modification of the accepted single-lambda betting factors is authorized by this decision.
+
+### 53.7 Endpoint hierarchy
+
+#### Level 1 — feasibility and validity gate
+
+A cell is eligible only if all conditions hold before examining its proxy contrast:
+
+* empirical coverage is at least 0.94 at nominal 0.95 in both UP and SP;
+* zero-oracle-event replicate proportion is at most 0.50;
+* invalid-confidence-set proportion is 0;
+* empty-confidence-set proportion is 0;
+* `U_UP(B) < 1` in at least 0.90 of replicates.
+
+Every ineligible cell remains in the feasibility map with an explicit exclusion reason.
+
+#### Level 2 — conditional proxy endpoint
+
+For each eligible cell:
+
+```text
+Delta_cell =
+    1 -
+    mean_r(U_SP(B; r)) /
+    mean_r(U_UP(B; r))
+```
+
+Aggregate:
+
+```text
+Delta =
+    equal-weight mean of Delta_cell
+    across eligible cells
+```
+
+Negative values remain in the analysis and mean directed sampling performed worse.
+
+No cell is weighted by perceived realism or by replicate count.
+
+The number and identity of eligible cells must be reported.
+
+Result interpretation:
+
+* no eligible cells: INCONCLUSIVE;
+* lower confidence bound on `Delta` greater than frozen practical threshold `delta`: POSITIVE;
+* upper confidence bound on `Delta` below `delta`: NEGATIVE;
+* interval crosses `delta`: INCONCLUSIVE;
+* failed coverage or failed mandatory negative control: INVALID.
+
+The feasibility map is always reported across all cells.
+
+Blocking and Authorization threshold crossings remain secondary operational interpretations.
+
+### 53.8 Negative and falsification controls
+
+The following controls are mandatory:
+
+1. identity transformation;
+2. structural label invariance;
+3. `pi_H = 0`;
+4. fragility unrelated to error;
+5. stable shared false belief;
+6. permuted PPI;
+7. constant PPI;
+8. `pi_H = 1` with sufficiently high prevalence to create the maximally favourable PPI condition.
+
+Distinct notation is mandatory:
+
+* sampling exploration weight: `epsilon_samp`;
+* negative-control tolerance: `gamma_NC`;
+* confidence-sequence error level: `alpha_CS`;
+* true joint-dangerous-error prevalence: `p_JDE`.
+
+One symbol must not represent more than one of these quantities.
+
+For null-control cells define:
+
+```text
+G =
+    1 -
+    mean_r(U_SP(B; r)) /
+    mean_r(U_UP(B; r))
+```
+
+Evaluate separately for:
+
+* `pi_H = 0`;
+* permuted PPI;
+* constant PPI.
+
+Use a one-sided 95% bootstrap confidence interval within each null class.
+
+`gamma_NC` must be obtained from separately reserved development seeds:
+
+1. run the frozen null mechanism on those seeds;
+2. estimate the 97.5th percentile of observed `G`;
+3. freeze that numerical value before the subsequent development evaluation;
+4. never reuse those calibration seeds elsewhere.
+
+Classifications:
+
+* upper confidence bound less than or equal to `gamma_NC` in all three classes: negative-control gate passed;
+* upper confidence bound greater than `gamma_NC` for permuted or constant PPI: implementation failure;
+* upper confidence bound greater than `gamma_NC` for `pi_H = 0`, after the other two pass: invalid development sweep and generator investigation required;
+* controls pass but `Delta <= delta` in eligible `pi_H = 1` cells with adequate precision: reject the PPI path before preregistration.
+
+### 53.9 Development stages
+
+#### Stage 1 — plumbing validation only
+
+Initial engineering scale may use:
+
+* `N_A = 200`;
+* `B = 20`;
+* K=8, with K=4 sensitivity;
+* five arms;
+* 50 development replicates;
+* bounded exploration candidates;
+* all mandatory causal and control templates;
+* the additional `pi_H = 1` high-prevalence cell.
+
+Stage 1 cannot establish:
+
+* proxy usefulness;
+* estimator coverage adequacy;
+* practical effect;
+* preregistration readiness;
+* superiority over random auditing.
+
+Fifty replicates are insufficient for a scientific coverage conclusion.
+
+#### Stage 2 — development feasibility map
+
+Before fixing `delta`, `epsilon_samp`, `gamma_NC`, `N_eval`, or preregistration parameters, the development design must include at least:
+
+```text
+p_JDE in {
+    1e-1,
+    3e-2,
+    1e-2,
+    3e-3
+}
+
+B in {
+    50,
+    100,
+    200,
+    500
+}
+```
+
+with:
+
+* `N_A >= 5000`;
+* `pi_H in {0, 0.5, 1}`;
+* at least 200 replicates per evaluated cell;
+* `epsilon_samp` candidates including `{0.1, 0.2, 0.4}`;
+* the common lambda-mixture construction;
+* reserved calibration seeds separated from evaluation seeds.
+
+This is a minimum development candidate grid, not a frozen confirmatory grid.
+
+Development outputs are used to determine:
+
+* the feasibility and eligibility map;
+* the common lambda grid;
+* exploration weight;
+* `gamma_NC`;
+* practical threshold `delta`;
+* required `N_eval`;
+* whether PPI survives the development gate.
+
+Confirmatory seeds, manifests, cell composition, and outcomes remain inaccessible.
+
+### 53.10 Non-claims and stop rule
+
+This contract does not establish:
+
+* that PPI is useful;
+* that directed auditing improves estimation;
+* that the generator represents a real deployment;
+* that any verifier qualifies for Blocking or Authorization;
+* that the lambda mixture has passed empirical coverage;
+* that K=8 is operationally affordable in a real system;
+* that a confirmatory protocol is ready.
+
+Stop or reject the PPI path if:
+
+* proxy access to hidden fields is detected;
+* the score-error relationship is directly assigned;
+* mixture coverage fails and no separately authorized fallback exists;
+* negative controls fail;
+* PPI fails to exceed the frozen practical threshold in the maximally favourable condition with adequate precision;
+* useful performance appears only after tuning;
+* implementation requires expansion into retrieval, real providers, or additional domains.
+
+A rejected PPI path may not be rescued through post hoc generator retuning.
+
+Any replacement proxy requires a new recorded decision before implementation.
+
+---
+
+## 54. Current authorized next step
+
+### Current authorized next stage
+
+Synchronize this accepted method contract into the canonical repository.
+
+After the synchronization is merged, the next possible stage is a separately authorized, bounded, development-only implementation task for:
+
+* structural PPI generator plumbing;
+* frozen transformation bank;
+* confidence-margin baseline;
+* five arms;
+* common equal-weight lambda mixture;
+* compact development artifacts;
+* replay-grade selected traces;
+* mandatory negative controls;
+* Stage 1 plumbing validation.
+
+### Not authorized by the register itself
+
+The register does not itself authorize:
+
+* implementation;
+* Stage 1 execution;
+* Stage 2 execution;
+* full development sweep;
+* preregistration;
+* confirmatory manifest creation;
 * confirmatory execution;
 * repository rename;
 * replacement of the historical root README;
-* creation or exposure of a confirmatory manifest;
-* public release.
+* commit;
+* push;
+* merge;
+* release.
