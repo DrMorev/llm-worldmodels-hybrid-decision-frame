@@ -160,17 +160,19 @@ A proxy that cannot be implemented without hidden truth, privileged variables, o
 
 All strategies will operate under the same preregistered oracle budget B.
 
-The experiment will include at least:
+The sole designated development primary-proxy candidate is:
 
-1. fixed-budget random auditing within the agreement region;
-2. one preregistered primary proxy strategy;
-3. a sequential statistical baseline based on Wald SPRT or another justified anytime-valid procedure.
+`paired_perturbation_instability`
 
-Additional proxies may be included as preregistered secondary comparisons.
+It is not yet frozen as the confirmatory primary proxy. It may enter the preregistration only after passing the accepted development feasibility gate.
 
-There will be one primary proxy.
+`confidence_floor_margin` is retained as a cheap confirmatory baseline, not as a second primary proxy.
 
-Confirmatory secondary comparisons will use a preregistered multiple-comparison correction, with Holm correction as the current default.
+`evidence_path_overlap` is excluded from the current experiment. Any later use would require a separate post-release architecture-specific GO decision.
+
+The planned development comparison includes uniform and directed auditing within the agreement region, using the accepted anytime-valid statistical machinery. The primary planned contrast is PPI-informed sampling with PPI as a control variate against uniform sampling with PPI as a control variate. Confirmatory secondary contrasts, if retained after development, will use preregistered Holm correction.
+
+There will be one confirmatory primary proxy, fixed only through the later preregistration process.
 
 ---
 
@@ -178,15 +180,17 @@ Confirmatory secondary comparisons will use a preregistered multiple-comparison 
 
 The primary endpoint is continuous.
 
-At a fixed oracle budget, the experiment will compare a statistically valid upper confidence bound on joint dangerous-error risk, or a preregistered equivalent continuous measure of qualification-relevant estimation performance.
+The accepted development-method hierarchy is:
 
-The preregistration must specify the exact form before implementation, including whether the primary comparison uses:
+1. a feasibility and statistical-validity eligibility gate applied before examining proxy contrasts;
+2. a conditional relative-reduction endpoint comparing SP with UP only in eligible cells;
+3. a feasibility map reported across all cells, including ineligible cells and their exclusion reasons.
 
-* the upper risk bound α̂_U;
-* the width or tightness of that valid bound;
-* another equivalent continuous measure justified in advance.
+At a fixed oracle budget, the conditional endpoint compares statistically valid upper confidence bounds on joint dangerous-error risk. Negative effects remain part of the analysis.
 
-The primary endpoint must support:
+Exact confirmatory numerical values remain to be fixed only after development evidence and preregistration. This document does not fix the practical threshold, evaluation size, sampling exploration weight, negative-control tolerance, lambda-grid values, oracle budget, or confirmatory cells.
+
+The endpoint design must support:
 
 * uncertainty quantification;
 * simulation-based evaluation-size design;
@@ -672,16 +676,15 @@ Do not expand before that release into:
 
 ## 27. Current authorized next step
 
-Commit and adopt the canonical repository documents, then prepare the preregistration for review.
+`paired_perturbation_instability` is the sole designated development primary-proxy candidate. It is not yet frozen for confirmatory use.
 
-The first substantive preregistration decision is:
+The current action is synchronization of the accepted PPI development method contract into the canonical repository documents.
 
-**Select one realizable primary proxy.**
-
-Additional confirmatory proxies, if retained, will be secondary and subject to the preregistered multiple-comparison procedure.
+After that synchronization is merged, any bounded development-only implementation requires a separate explicit authorization.
 
 This document does not authorize:
 
+* development implementation or execution;
 * confirmatory implementation;
 * confirmatory execution;
 * repository rename;

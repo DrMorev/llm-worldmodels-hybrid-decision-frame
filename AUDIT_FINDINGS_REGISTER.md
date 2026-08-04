@@ -1440,6 +1440,21 @@ The repository is not release-ready. The root README, migration note, preregistr
 
 ## Current authorized next step
 
-Commit the canonical repository documents, then select one realizable primary proxy through a neutral methodological review before drafting the preregistration.
+Neutral proxy review has produced one designated development primary-proxy candidate: `paired_perturbation_instability`.
 
-This register does not authorize confirmatory implementation, confirmatory execution, repository rename, deletion of the historical root README, public release, commit, or push by itself.
+PPI usefulness remains unproven. The method contract is a specification, not evidence that the proxy improves audit allocation or that directed auditing outperforms uniform auditing.
+
+After canonical synchronization, the next possible stage is a separately authorized, bounded, development-only implementation task.
+
+Mandatory development controls include:
+
+* proxy-field isolation;
+* structural transformation invariance;
+* equal-weight lambda-mixture coverage;
+* null-mechanism controls;
+* permutation and constant-score controls;
+* stable shared-false-belief falsification.
+
+No implementation-dependent finding is closed by adoption of the method contract.
+
+This register does not authorize development implementation, confirmatory implementation, confirmatory execution, preregistration approval, repository rename, deletion of the historical root README, public release, commit, push, or merge by itself.
