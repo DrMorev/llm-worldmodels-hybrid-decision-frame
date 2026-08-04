@@ -128,6 +128,11 @@ STAGE1_SCENARIO_SPECS: Mapping[str, Stage1ScenarioSpec] = {
     ),
 }
 
+STAGE1_ACCEPTANCE_CHECK_SEEDS: Tuple[int, ...] = (
+    91001, 91002, 91003, 91004, 91005,
+    91006, 91007, 91008, 91009, 91010,
+)
+
 
 @dataclass(frozen=True)
 class Stage1CausalCase:
@@ -155,6 +160,18 @@ class GeneratedStage1Population:
     component_evaluation_count: int
     identity_sentinel_passed: bool
     structural_invariance_passed: bool
+
+
+@dataclass(frozen=True)
+class Stage1AcceptanceCheck:
+    """Acceptance-only validation record; it intentionally exposes no hidden fields."""
+
+    scenario_id: str
+    seed: int
+    accepted_candidate_count: int
+    generated_candidate_count: int
+    acceptance_rate: float
+    selection_neutral_null: bool
 
 
 def _component_logit(
@@ -280,7 +297,7 @@ def generate_stage1_population(
     identity_passed = True
     invariance_passed = True
     while len(selected_cases) < population_size:
-        if candidate_index >= population_size * 50:
+        if candidate_index >= config.maximum_generated_candidates:
             raise RuntimeError("could not construct the requested agreement population")
         canonical_state = 1 if rng.random() < 0.5 else -1
         truth = int(canonical_state == 1)
@@ -408,6 +425,11 @@ def generate_stage1_population(
         "association_after_agreement": _pearson_association(selected_error_pairs),
         "candidate_count_before_selection": candidate_index,
         "agreement_population_count": population_size,
+        "generated_candidate_count": candidate_index,
+        "accepted_candidate_count": population_size,
+        "acceptance_rate": population_size / candidate_index,
+        "before_association_population_size": len(all_error_pairs),
+        "after_association_population_size": len(selected_error_pairs),
         "diagnostic_only": True,
     }
     manifest = {
@@ -424,6 +446,15 @@ def generate_stage1_population(
             "normalization_verifier": config.normalization_verifier,
             "classification": "Stage 1 engineering-only",
         },
+        "agreement_selection": {
+            "tau_stage1": config.tau_primary,
+            "maximum_generated_candidates": config.maximum_generated_candidates,
+            "accepted_candidate_count": population_size,
+            "generated_candidate_count": candidate_index,
+            "acceptance_rate": population_size / candidate_index,
+            "engineering_only": True,
+            "selection_neutral_null": scenario_id == "no_shared_fragile_mechanism",
+        },
         "constants": stage1_engineering_constants(),
     }
     return GeneratedStage1Population(
@@ -436,3 +467,34 @@ def generate_stage1_population(
         identity_sentinel_passed=identity_passed,
         structural_invariance_passed=invariance_passed,
     )
+
+
+def validate_stage1_acceptance(
+    config: Stage1Config,
+    seeds: Sequence[int] = STAGE1_ACCEPTANCE_CHECK_SEEDS,
+) -> Tuple[Stage1AcceptanceCheck, ...]:
+    """Run reserved acceptance-only checks without returning truth or score data."""
+
+    config.validate()
+    if tuple(seeds) != STAGE1_ACCEPTANCE_CHECK_SEEDS:
+        raise ValueError("Stage 1 acceptance validation requires the reserved seed set")
+    checks = []
+    for scenario_id in config.scenario_ids:
+        for seed in seeds:
+            generated = generate_stage1_population(
+                scenario_id, config.population_size, seed, config
+            )
+            diagnostic = generated.collider_diagnostic
+            accepted = int(diagnostic["accepted_candidate_count"])
+            candidate_count = int(diagnostic["generated_candidate_count"])
+            checks.append(
+                Stage1AcceptanceCheck(
+                    scenario_id=scenario_id,
+                    seed=seed,
+                    accepted_candidate_count=accepted,
+                    generated_candidate_count=candidate_count,
+                    acceptance_rate=accepted / candidate_count,
+                    selection_neutral_null=scenario_id == "no_shared_fragile_mechanism",
+                )
+            )
+    return tuple(checks)

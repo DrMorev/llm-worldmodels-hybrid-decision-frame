@@ -233,8 +233,15 @@ m_c = clip((abs(L_c) - tau_c) / (M_c - tau_c), 0, 1)
 S_M = 1 - min(m_P, m_V).
 ```
 
-Stage 1 uses explicit engineering-only `tau` and `M` values fixed across the
-run. Missing, nonfinite, or invalid magnitudes are typed invalid conditions.
+Stage 1 uses the fixed engineering-only common agreement threshold
+`tau_primary = tau_verifier = 0.25`, with `M_primary = M_verifier = 3.0`.
+This threshold was selected from acceptance-count development evidence only:
+no truth, dangerous-error label or prevalence, mechanism field, PPI or margin
+ranking, bound, coverage, discovered-error count, or arm comparison entered
+the decision. It is neither a Stage 2 nor a confirmatory parameter. Candidate
+generation is capped at 5,000 candidates to obtain the fixed 200-case accepted
+population; missing, nonfinite, or invalid magnitudes are typed invalid
+conditions.
 
 | ID | Sampling | Control variate |
 | --- | --- | --- |
@@ -266,9 +273,11 @@ The eight mechanical templates are `no_shared_fragile_mechanism`,
 `permuted_ppi`, `low_shared_fragile_mechanism`,
 `mixed_fragile_and_stable_failure`, and
 `maximally_favourable_fragile_mechanism`. They exercise required controls but
-are not statistically classified by Stage 1. The collider diagnostic reports
-component-error association before and after agreement selection and never
-enters a score or endpoint.
+are not statistically classified by Stage 1. `no_shared_fragile_mechanism` is
+an allowed selection-neutral/null boundary and may retain acceptance rate 1.0.
+The collider diagnostic reports component-error association and population
+sizes before and after agreement selection; it never enters a score or
+endpoint.
 
 Run the plumbing command from the repository root with an external directory:
 
@@ -288,11 +297,16 @@ scenario-by-arm-by-K combination, plus any invalid run or replay failure.
 Trace replay binds the chronological residual population to an authoritative
 serialized population, all named observable score channels, original and
 transformed outputs, factual q vectors, draw variates, CV inputs, lambda grid,
-and mixture result. Unkeyed digests provide reproducibility and internal
-consistency, not cryptographic authenticity against coordinated rewriting.
+and mixture result. Every audit's ordered lambda grid and its digest must equal
+the configuration grid and digest; the serialized transformation-bank digest
+must equal the frozen bank before audit processing begins. Unkeyed digests
+provide reproducibility and internal consistency, not cryptographic
+authenticity against coordinated rewriting.
 
 PPI scoring costs approximately `2 * K` additional component evaluations per
 case in the agreement population. Fixing the oracle budget therefore does not
 fix total inference cost. Synthetic structural invariance does not establish
 real-world semantic invariance, and no Stage 1 output is evidence that PPI is
-useful or that directed auditing is superior.
+useful or that directed auditing is superior. The prevalence-1 boundary fixture
+is retained for Stage 1 mechanics only; it is not an accepted Stage 2
+maximally-favourable feasibility cell.

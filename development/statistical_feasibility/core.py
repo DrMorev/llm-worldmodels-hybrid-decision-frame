@@ -274,8 +274,8 @@ class Stage1Config:
     lambda_grid: Tuple[float, ...] = (0.05, 0.10, 0.25, 0.50)
     alpha_cs: float = 0.05
     ridge: float = 1e-6
-    tau_primary: float = 0.10
-    tau_verifier: float = 0.10
+    tau_primary: float = 0.25
+    tau_verifier: float = 0.25
     normalization_primary: float = 3.0
     normalization_verifier: float = 3.0
     master_seed: int = 20260804
@@ -284,8 +284,9 @@ class Stage1Config:
     scenario_ids: Tuple[str, ...] = STAGE1_SCENARIOS
     compact_limit_bytes: int = 100 * 1024 * 1024
     trace_limit_bytes: int = 250 * 1024 * 1024
+    maximum_generated_candidates: int = 5000
     manifest_type: str = "development_only_ppi_stage1"
-    schema_version: str = "ppi-stage1-v1"
+    schema_version: str = "ppi-stage1-v2"
 
     def validate(self) -> None:
         if self.manifest_type != "development_only_ppi_stage1":
@@ -311,6 +312,8 @@ class Stage1Config:
             raise ValueError("alpha_cs must lie in (0, 1)")
         if self.ridge <= 0.0 or not math.isfinite(self.ridge):
             raise ValueError("ridge must be finite and positive")
+        if self.tau_primary != self.tau_verifier:
+            raise ValueError("Stage 1 requires one common agreement threshold")
         for threshold, normalization in (
             (self.tau_primary, self.normalization_primary),
             (self.tau_verifier, self.normalization_verifier),
@@ -327,6 +330,8 @@ class Stage1Config:
             raise ValueError("Stage 1 scenario IDs must be unique")
         if self.compact_limit_bytes <= 0 or self.trace_limit_bytes <= 0:
             raise ValueError("artifact limits must be positive")
+        if self.maximum_generated_candidates < self.population_size:
+            raise ValueError("generated-candidate ceiling must cover the population")
         for tolerance in (self.inversion_tolerance, self.monotonicity_tolerance):
             if tolerance <= 0.0 or not math.isfinite(tolerance):
                 raise ValueError("Stage 1 tolerances must be finite and positive")

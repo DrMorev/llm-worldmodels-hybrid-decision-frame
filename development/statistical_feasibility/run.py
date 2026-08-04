@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import platform
 import random
+import re
 import statistics
 import sys
 import tempfile
@@ -703,7 +704,10 @@ def replay_artifact(path: Path) -> dict:
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
         raise ValueError("artifact root must be an object")
-    if document.get("schema_version") == "ppi-stage1-replay-v1":
+    if document.get("schema_version") in {
+        "ppi-stage1-replay-v1",
+        "ppi-stage1-replay-v2",
+    }:
         return replay_stage1_artifact_document(document)
     return replay_serialized_audits(document)
 
@@ -1061,6 +1065,27 @@ def _validate_stage1_observable_outputs(record: Mapping[str, object], channels: 
             raise ValueError("Stage 1 confidence-margin channel/output inconsistency")
 
 
+def _validated_sha256(value: object, field: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _validated_lambda_grid(value: object, field: str) -> Tuple[float, ...]:
+    # Serialized JSON uses a list; the in-memory self-replay path retains the
+    # frozen configuration tuple.  Both preserve ordered numeric semantics.
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(f"{field} must be a non-empty ordered sequence")
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        raise ValueError(f"{field} contains a malformed lambda")
+    grid = tuple(float(item) for item in value)
+    if any(not math.isfinite(item) or not 0.0 < item <= 0.50 for item in grid):
+        raise ValueError(f"{field} contains an inadmissible lambda")
+    if len(set(grid)) != len(grid):
+        raise ValueError(f"{field} contains duplicate lambdas")
+    return grid
+
+
 def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
     """Replay selected traces only from the serialized Stage 1 artifact."""
 
@@ -1068,6 +1093,33 @@ def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
     audits = document.get("audits")
     if not isinstance(populations, list) or not isinstance(audits, list):
         raise ValueError("Stage 1 artifact lacks populations or audits")
+    try:
+        configuration = document.get("configuration")
+        if not isinstance(configuration, Mapping):
+            raise ValueError("Stage 1 artifact lacks configuration")
+        configuration_grid = _validated_lambda_grid(
+            configuration.get("lambda_grid"), "configuration lambda_grid"
+        )
+        configuration_digest = _validated_sha256(
+            document.get("lambda_grid_digest"), "configuration lambda_grid_digest"
+        )
+        if configuration_digest != _lambda_grid_digest(configuration_grid):
+            raise ValueError("configuration lambda-grid digest mismatch")
+        bank_record = document.get("transformation_bank")
+        if not isinstance(bank_record, Mapping):
+            raise ValueError("Stage 1 artifact lacks transformation-bank record")
+        bank_digest = _validated_sha256(
+            bank_record.get("digest"), "transformation-bank digest"
+        )
+        if bank_digest != frozen_transformation_bank().digest:
+            raise ValueError("transformation-bank digest does not match the frozen bank")
+    except (TypeError, ValueError) as error:
+        return {
+            "checked_audits": len(audits),
+            "checked_draws": 0,
+            "failure_count": 1,
+            "failures": [{"audit_id": None, "reason": str(error)}],
+        }
     population_map = {}
     failures = []
     for population in populations:
@@ -1102,6 +1154,18 @@ def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
             trace = list(audit["trace"])
             if len(selection_order) != len(trace):
                 raise ValueError("Stage 1 selection-order length mismatch")
+            audit_grid = _validated_lambda_grid(
+                audit.get("lambda_grid"), "audit lambda_grid"
+            )
+            audit_digest = _validated_sha256(
+                audit.get("lambda_grid_digest"), "audit lambda_grid_digest"
+            )
+            if audit_grid != configuration_grid:
+                raise ValueError("audit lambda grid differs from configuration grid")
+            if audit_digest != _lambda_grid_digest(audit_grid):
+                raise ValueError("audit lambda-grid digest mismatch")
+            if audit_digest != configuration_digest:
+                raise ValueError("audit lambda-grid digest differs from configuration digest")
             reconstructed_steps: List[WealthStep] = []
             observed_complements = 0
             for position, row in enumerate(trace, start=1):
@@ -1157,9 +1221,6 @@ def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
                     WealthStep(constant, observed_complements / len(population["items"]), (), support_minimum, support_count)
                 )
                 remaining.remove(selected)
-            config = document.get("configuration")
-            if not isinstance(config, Mapping):
-                raise ValueError("Stage 1 artifact lacks configuration")
             expected = audit.get("mixture_result")
             if not isinstance(expected, Mapping):
                 raise ValueError("selected replay audit lacks a stored mixture result")
@@ -1168,10 +1229,10 @@ def replay_stage1_artifact_document(document: Mapping[str, object]) -> dict:
             try:
                 evaluation = evaluate_running_mixture_bound(
                     reconstructed_steps,
-                    tuple(float(value) for value in config["lambda_grid"]),
-                    float(config["alpha_cs"]),
-                    float(config["inversion_tolerance"]),
-                    float(config["monotonicity_tolerance"]),
+                    audit_grid,
+                    float(configuration["alpha_cs"]),
+                    float(configuration["inversion_tolerance"]),
+                    float(configuration["monotonicity_tolerance"]),
                 )
                 replayed_upper = evaluation.upper_error_bound
             except EmptyConfidenceSet:
@@ -1265,6 +1326,7 @@ def run_ppi_stage1(
     all_q_positive = True
     all_common_lambda = True
     constant_uniform_passed = True
+    acceptance_by_scenario: Dict[str, List[Mapping[str, object]]] = {}
 
     for scenario_id in config.scenario_ids:
         scenario_counts[scenario_id] = 0
@@ -1274,6 +1336,9 @@ def run_ppi_stage1(
             )
             generated = generate_stage1_population(
                 scenario_id, config.population_size, population_seed, config, bank
+            )
+            acceptance_by_scenario.setdefault(scenario_id, []).append(
+                generated.collider_diagnostic
             )
             population_record = _stage1_population_record(
                 generated, replicate, population_seed
@@ -1313,6 +1378,7 @@ def run_ppi_stage1(
                                 "selection_order": audit["selection_order"],
                                 "trace": audit["trace"],
                                 "lambda_grid": list(config.lambda_grid),
+                                "lambda_grid_digest": lambda_digest,
                                 "mixture_result": mixture_result,
                             }
                         )
@@ -1332,6 +1398,9 @@ def run_ppi_stage1(
                         "lambda_grid_digest": lambda_digest,
                         "lambda_grid": list(config.lambda_grid),
                         "alpha_CS": config.alpha_cs,
+                        "tau_primary": config.tau_primary,
+                        "tau_verifier": config.tau_verifier,
+                        "maximum_generated_candidates": config.maximum_generated_candidates,
                         "arm_id": arm.arm_id,
                         "conceptual_arm": arm.conceptual_arm,
                         "sampling_policy": arm.sampling_policy,
@@ -1360,6 +1429,9 @@ def run_ppi_stage1(
                             "fixed_oracle_budget_does_not_fix_inference_cost": True,
                         },
                         "collider_diagnostic": generated.collider_diagnostic,
+                        "agreement_selection": generated.scenario_manifest[
+                            "agreement_selection"
+                        ],
                         "selected_replay_trace_reference": trace_reference,
                         "q_replay_passed": audit["q_replay_passed"],
                         "mixture_monotonicity_status": mixture_result["monotonicity_status"],
@@ -1384,11 +1456,12 @@ def run_ppi_stage1(
         raise InvalidDevelopmentRun("compact Stage 1 output exceeds configured limit")
     compact_path.write_bytes(compact_bytes)
     replay_document = {
-        "schema_version": "ppi-stage1-replay-v1",
+        "schema_version": "ppi-stage1-replay-v2",
         "notice": DEVELOPMENT_ONLY_NOTICE,
         "code_version": STAGE1_CODE_VERSION,
         "git_provenance": provenance,
         "configuration": asdict(config),
+        "lambda_grid_digest": lambda_digest,
         "development_manifest_digest": manifest_digest,
         "transformation_bank": {
             "bank_id": bank.bank_id,
@@ -1409,12 +1482,27 @@ def run_ppi_stage1(
     if replay_result["failure_count"]:
         raise InvalidDevelopmentRun("selected Stage 1 trace replay failed")
     report = {
-        "schema_version": "ppi-stage1-summary-v1",
+        "schema_version": "ppi-stage1-summary-v2",
         "notice": DEVELOPMENT_ONLY_NOTICE,
         "scientific_classification_performed": False,
         "configuration": asdict(config),
         "development_manifest_digest": manifest_digest,
         "scenario_run_counts": scenario_counts,
+        "agreement_selection_summary": {
+            scenario_id: {
+                "selection_neutral_null": scenario_id == "no_shared_fragile_mechanism",
+                "acceptance_rates": [
+                    row["acceptance_rate"] for row in diagnostics
+                ],
+                "generated_candidate_counts": [
+                    row["generated_candidate_count"] for row in diagnostics
+                ],
+                "accepted_candidate_counts": [
+                    row["accepted_candidate_count"] for row in diagnostics
+                ],
+            }
+            for scenario_id, diagnostics in sorted(acceptance_by_scenario.items())
+        },
         "scenario_count": len(scenario_counts),
         "replicate_count_per_scenario": config.replicates,
         "arm_configurations_per_replicate": len(config.ks) * 5,

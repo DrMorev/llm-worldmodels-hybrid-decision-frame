@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -33,6 +34,7 @@ from development.statistical_feasibility.proxies import (
     ppi_from_observable_outputs,
 )
 from development.statistical_feasibility.run import (
+    _lambda_grid_digest,
     replay_artifact,
     retain_stage1_trace,
     run_ppi_stage1,
@@ -40,8 +42,10 @@ from development.statistical_feasibility.run import (
 )
 from development.statistical_feasibility.sampling import policy_probabilities
 from development.statistical_feasibility.scenarios import (
+    STAGE1_ACCEPTANCE_CHECK_SEEDS,
     STAGE1_SCENARIO_SPECS,
     generate_stage1_population,
+    validate_stage1_acceptance,
 )
 
 
@@ -244,6 +248,159 @@ class ScenarioAndArtifactTests(unittest.TestCase):
     def test_40_phase1b_legacy_imports_remain(self):
         from development.statistical_feasibility.run import run_smoke
         self.assertTrue(callable(run_smoke))
+
+
+class Stage1AuditFindingTests(unittest.TestCase):
+    """Focused regressions for the independent Stage 1 audit findings."""
+
+    @staticmethod
+    def _small_config():
+        return Stage1Config(
+            population_size=12,
+            budget=2,
+            replicates=1,
+            scenario_ids=("constant_ppi",),
+        )
+
+    def _artifact_document(self, folder):
+        result = run_ppi_stage1(Path(folder), self._small_config())
+        path = Path(result["selected_replay_traces"])
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _write_document(folder, name, document):
+        path = Path(folder) / name
+        path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+        return path
+
+    def test_41_genuine_stage1_replay_metadata_passes(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            path, _ = self._artifact_document(folder)
+            self.assertEqual(replay_artifact(path)["failure_count"], 0)
+
+    def test_42_shortened_lambda_grids_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            for index, grid in enumerate(((.05, .10), (.05,), (.50,))):
+                document = self._artifact_document(folder)[1]
+                document["audits"][0]["lambda_grid"] = list(grid)
+                document["audits"][0]["lambda_grid_digest"] = _lambda_grid_digest(grid)
+                replay = replay_artifact(
+                    self._write_document(folder, f"short-{index}.json", document)
+                )
+                self.assertGreater(replay["failure_count"], 0)
+
+    def test_43_reordered_lambda_grid_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            _, document = self._artifact_document(folder)
+            grid = (0.10, 0.05, 0.25, 0.50)
+            document["audits"][0]["lambda_grid"] = list(grid)
+            document["audits"][0]["lambda_grid_digest"] = _lambda_grid_digest(grid)
+            replay = replay_artifact(self._write_document(folder, "reordered.json", document))
+            self.assertGreater(replay["failure_count"], 0)
+
+    def test_44_modified_configuration_inconsistent_grid_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            _, document = self._artifact_document(folder)
+            grid = (0.05, 0.10, 0.25, 0.40)
+            document["audits"][0]["lambda_grid"] = list(grid)
+            document["audits"][0]["lambda_grid_digest"] = _lambda_grid_digest(grid)
+            replay = replay_artifact(self._write_document(folder, "modified.json", document))
+            self.assertGreater(replay["failure_count"], 0)
+
+    def test_45_stale_lambda_digest_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            _, document = self._artifact_document(folder)
+            document["audits"][0]["lambda_grid_digest"] = "0" * 64
+            replay = replay_artifact(self._write_document(folder, "stale.json", document))
+            self.assertGreater(replay["failure_count"], 0)
+
+    def test_46_duplicate_lambda_grid_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            _, document = self._artifact_document(folder)
+            grid = (0.05, 0.10, 0.25, 0.25)
+            document["audits"][0]["lambda_grid"] = list(grid)
+            document["audits"][0]["lambda_grid_digest"] = _lambda_grid_digest(grid)
+            replay = replay_artifact(self._write_document(folder, "duplicate.json", document))
+            self.assertGreater(replay["failure_count"], 0)
+
+    def test_47_transformation_bank_digest_binding(self):
+        with tempfile.TemporaryDirectory(prefix="ppi-audit-findings-") as folder:
+            _, document = self._artifact_document(folder)
+            reordered_bank_digest = hashlib.sha256(
+                json.dumps(
+                    list(reversed(document["transformation_bank"]["transformation_ids"])),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            for name, digest in (
+                ("zero", "0" * 64),
+                ("malformed", "not-a-digest"),
+                ("reordered", reordered_bank_digest),
+            ):
+                forged = copy.deepcopy(document)
+                forged["transformation_bank"]["digest"] = digest
+                replay = replay_artifact(self._write_document(folder, f"bank-{name}.json", forged))
+                self.assertGreater(replay["failure_count"], 0)
+
+    def test_48_fixed_common_stage1_threshold(self):
+        config = Stage1Config()
+        self.assertEqual((config.tau_primary, config.tau_verifier), (.25, .25))
+        self.assertEqual(config.maximum_generated_candidates, 5000)
+        for arm in stage1_arms(8, config.epsilon_samp):
+            self.assertEqual((config.tau_primary, config.tau_verifier), (.25, .25))
+            self.assertIsNotNone(arm.arm_id)
+
+    def test_49_acceptance_only_validation_has_required_nonvacuous_cells(self):
+        checks = validate_stage1_acceptance(Stage1Config())
+        self.assertEqual({row.seed for row in checks}, set(STAGE1_ACCEPTANCE_CHECK_SEEDS))
+        by_scenario = {}
+        for row in checks:
+            by_scenario.setdefault(row.scenario_id, []).append(row)
+        null_rows = by_scenario["no_shared_fragile_mechanism"]
+        self.assertTrue(all(row.selection_neutral_null for row in null_rows))
+        low_rows = by_scenario["low_shared_fragile_mechanism"]
+        self.assertTrue(all(row.acceptance_rate < 1.0 for row in low_rows))
+        self.assertGreaterEqual(
+            sorted(row.acceptance_rate for row in low_rows)[len(low_rows) // 2], .50
+        )
+        self.assertLessEqual(
+            sorted(row.acceptance_rate for row in low_rows)[len(low_rows) // 2], .95
+        )
+        additional = [
+            rows for scenario, rows in by_scenario.items()
+            if scenario not in {"no_shared_fragile_mechanism", "low_shared_fragile_mechanism"}
+            and sum(row.acceptance_rate < 1.0 for row in rows) >= 8
+            and sorted(row.acceptance_rate for row in rows)[len(rows) // 2] < .95
+        ]
+        self.assertTrue(additional)
+        self.assertTrue(all(row.generated_candidate_count <= 5000 for row in checks))
+        self.assertTrue(all(row.accepted_candidate_count == 200 for row in checks))
+
+    def test_50_acceptance_population_and_collider_sets_are_separated(self):
+        config = Stage1Config()
+        generated = generate_stage1_population("low_shared_fragile_mechanism", 200, 91001, config)
+        self.assertEqual(generated.population.size, 200)
+        diagnostic = generated.collider_diagnostic
+        self.assertGreater(diagnostic["generated_candidate_count"], generated.population.size)
+        self.assertEqual(diagnostic["accepted_candidate_count"], 200)
+        self.assertEqual(diagnostic["after_association_population_size"], 200)
+        self.assertEqual(
+            diagnostic["before_association_population_size"],
+            diagnostic["generated_candidate_count"],
+        )
+        self.assertLess(diagnostic["acceptance_rate"], 1.0)
+        for case in generated.causal_cases:
+            self.assertEqual(case.primary_logit >= 0.0, case.verifier_logit >= 0.0)
+            self.assertGreaterEqual(abs(case.primary_logit), .25)
+            self.assertGreaterEqual(abs(case.verifier_logit), .25)
+
+    def test_51_acceptance_checks_do_not_serialize_hidden_fields(self):
+        fields = set(next(iter(validate_stage1_acceptance(Stage1Config()))).__dataclass_fields__)
+        self.assertFalse(fields & {
+            "truth", "joint_dangerous_error", "ppi", "h_i", "stable_false_belief",
+            "component_error_primary", "component_error_verifier",
+        })
 
 
 if __name__ == "__main__":
