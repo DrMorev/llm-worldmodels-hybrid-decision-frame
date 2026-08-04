@@ -197,3 +197,102 @@ bisection implementation, synthetic fixtures, or its reporting and replay
 schema. No novelty is claimed for the statistical construction. The paper does
 not guarantee benefit from this project's score-informed policy; usefulness is
 empirical and unresolved.
+
+## PPI Stage 1 plumbing
+
+The `--ppi-stage1` mode is a separate development-only vertical slice. It
+retains the Phase 1B sampler, predictable control-variate rule, support-wide
+admissibility checks, and unchanged single-lambda wealth factors. It adds a
+structural synthetic generator, named observable score channels, five arms,
+and one equal-weight finite mixture of the common lambda grid.
+
+For an original agreement case with answer `A_i`, the score is
+
+```text
+S_PPI(i) = 1 - count_j(AP(T_j(x_i)) == AV(T_j(x_i)) == A_i) / K.
+```
+
+The ordered bank has eight frozen, equal-magnitude transformations. Each
+changes exactly one fragile-surface component while canonical state, truth,
+and robust feature remain invariant. K=4 uses the fixed nested index subset
+`(0, 2, 5, 7)`; identity is a separate sentinel. Primary flip rate, verifier
+flip rate, and perturbed disagreement rate are diagnostics only and cannot
+enter the PPI formula.
+
+The generator creates original and transformed outputs from a canonical state,
+robust information, a fragile surface, binary shared-fragile membership,
+transformation-invariant stable false belief, and separate component error
+terms. Joint dangerous error and PPI are derived afterward. The audit policy
+sees only `ppi_k8`, `ppi_k4`, and `confidence_margin`; it cannot receive truth,
+dangerous-error labels, mechanism membership, or component error terms.
+
+The confidence-margin channel is
+
+```text
+m_c = clip((abs(L_c) - tau_c) / (M_c - tau_c), 0, 1)
+S_M = 1 - min(m_P, m_V).
+```
+
+Stage 1 uses explicit engineering-only `tau` and `M` values fixed across the
+run. Missing, nonfinite, or invalid magnitudes are typed invalid conditions.
+
+| ID | Sampling | Control variate |
+| --- | --- | --- |
+| U0 | uniform | none |
+| UM | uniform | confidence margin |
+| UP | uniform | PPI |
+| SM | confidence-margin informed | confidence margin |
+| SP | PPI-informed | PPI |
+
+Machine IDs additionally encode K and, for nonuniform arms, exploration.
+Sampling and control-variate score keys are independent explicit fields. The
+nonuniform policy uses positive exploration `epsilon_samp`; equal scores obtain
+equal factual probabilities, and a constant score reduces exactly to uniform.
+
+For the common Stage 1 engineering grid `(0.05, 0.10, 0.25, 0.50)`, the code
+computes each unchanged single-lambda log wealth and combines them as
+
+```text
+log W_mix(q) = logsumexp(log W_lambda(q) for lambda in Lambda) - log(len(Lambda)).
+```
+
+The mixture is inverted once, with the existing logical bounds and running
+intersection. There is no best-lambda selection, arm-specific grid,
+cell-specific grid, minimum of uncorrected bounds, or automatic union-bound
+fallback. Stage 1 does not establish mixture coverage adequacy.
+
+The eight mechanical templates are `no_shared_fragile_mechanism`,
+`fragility_unrelated_to_error`, `stable_shared_false_belief`, `constant_ppi`,
+`permuted_ppi`, `low_shared_fragile_mechanism`,
+`mixed_fragile_and_stable_failure`, and
+`maximally_favourable_fragile_mechanism`. They exercise required controls but
+are not statistically classified by Stage 1. The collider diagnostic reports
+component-error association before and after agreement selection and never
+enters a score or endpoint.
+
+Run the plumbing command from the repository root with an external directory:
+
+```text
+python -B -m development.statistical_feasibility.run --ppi-stage1 --output-dir <external-directory>
+```
+
+Defaults are `N=200`, `B=20`, ten replicates per template, K=8 plus K=4
+sensitivity, `epsilon_samp=0.20`, `alpha_CS=0.05`, and the common lambda grid
+above. Every value is an engineering plumbing value, not a Stage 2 or
+confirmatory selection. This mode rejects any manifest type other than its
+explicit development-only type and cannot load a confirmatory manifest.
+
+`compact_results.jsonl` contains one bounded record per audit. Full replay
+traces are retained only for the predeclared replicate 0 of every
+scenario-by-arm-by-K combination, plus any invalid run or replay failure.
+Trace replay binds the chronological residual population to an authoritative
+serialized population, all named observable score channels, original and
+transformed outputs, factual q vectors, draw variates, CV inputs, lambda grid,
+and mixture result. Unkeyed digests provide reproducibility and internal
+consistency, not cryptographic authenticity against coordinated rewriting.
+
+PPI scoring costs approximately `2 * K` additional component evaluations per
+case in the agreement population. Fixing the oracle budget therefore does not
+fix total inference cost. Synthetic structural invariance does not establish
+real-world semantic invariance, and no Stage 1 output is evidence that PPI is
+useful or that directed auditing is superior.

@@ -299,3 +299,163 @@ def evaluate_running_bound(
         final_log_wealth_g1=_json_number(final_g1),
         final_log_wealth_at_bound=_json_number(final_bound),
     )
+
+
+def stable_logsumexp(values: Sequence[float]) -> float:
+    """Stable log(sum(exp(values))) with explicit infinite-value semantics."""
+
+    if not values:
+        raise ValueError("log-sum-exp requires at least one value")
+    if any(math.isnan(value) or value == math.inf for value in values):
+        raise ControlledNumericalFailure("invalid log value in mixture")
+    maximum = max(values)
+    if maximum == -math.inf:
+        return -math.inf
+    result = maximum + math.log(math.fsum(math.exp(value - maximum) for value in values))
+    if not math.isfinite(result):
+        raise ControlledNumericalFailure("non-finite log-sum-exp result")
+    return result
+
+
+def log_mixture_wealth(
+    steps: Sequence[WealthStep],
+    lambda_grid: Sequence[float],
+    candidate_g: float,
+    admissibility_tolerance: float = 0.0,
+) -> float:
+    """Equal-weight finite mixture of unchanged single-lambda wealth processes."""
+
+    lambdas = tuple(float(value) for value in lambda_grid)
+    if not lambdas or len(set(lambdas)) != len(lambdas):
+        raise ValueError("lambda grid must be non-empty and unique")
+    if any(not math.isfinite(value) or not 0.0 < value <= 0.50 for value in lambdas):
+        raise ValueError("lambda grid contains an inadmissible value")
+    component_logs = tuple(
+        log_wealth(steps, fixed_lambda, candidate_g, admissibility_tolerance)
+        for fixed_lambda in lambdas
+    )
+    value = stable_logsumexp(component_logs) - math.log(len(lambdas))
+    if math.isnan(value) or value == math.inf:
+        raise ControlledNumericalFailure("invalid equal-weight mixture wealth")
+    return value
+
+
+def verify_mixture_monotonicity(
+    steps: Sequence[WealthStep],
+    lambda_grid: Sequence[float],
+    tolerance: float,
+    admissibility_tolerance: float = 0.0,
+) -> bool:
+    previous = log_mixture_wealth(
+        steps, lambda_grid, 0.0, admissibility_tolerance
+    )
+    for index in range(1, 65):
+        current = log_mixture_wealth(
+            steps, lambda_grid, index / 64.0, admissibility_tolerance
+        )
+        if current > previous + tolerance:
+            return False
+        previous = current
+    return True
+
+
+def bisect_mixture_lower_bound(
+    steps: Sequence[WealthStep],
+    lambda_grid: Sequence[float],
+    audit_risk: float,
+    tolerance: float,
+    admissibility_tolerance: float = 0.0,
+) -> float:
+    threshold = math.log(1.0 / audit_risk)
+    at_zero = log_mixture_wealth(
+        steps, lambda_grid, 0.0, admissibility_tolerance
+    )
+    if at_zero < threshold:
+        return 0.0
+    at_one = log_mixture_wealth(
+        steps, lambda_grid, 1.0, admissibility_tolerance
+    )
+    if at_one >= threshold:
+        raise EmptyConfidenceSet("mixture confidence set is empty on [0, 1]")
+    low = 0.0
+    high = 1.0
+    while high - low > tolerance:
+        midpoint = (low + high) / 2.0
+        if log_mixture_wealth(
+            steps, lambda_grid, midpoint, admissibility_tolerance
+        ) >= threshold:
+            low = midpoint
+        else:
+            high = midpoint
+    return low
+
+
+def evaluate_running_mixture_bound(
+    steps: Sequence[WealthStep],
+    lambda_grid: Sequence[float],
+    audit_risk: float,
+    inversion_tolerance: float,
+    monotonicity_tolerance: float,
+) -> BoundEvaluation:
+    """Invert one common equal-weight lambda mixture with a running intersection."""
+
+    lambdas = tuple(float(value) for value in lambda_grid)
+    if not steps:
+        return BoundEvaluation(0.0, 1.0, 1.0, "passed", 0.0, 0.0, 0.0)
+    running_lower = 0.0
+    min_multiplier = math.inf
+    for end in range(1, len(steps) + 1):
+        prefix = steps[:end]
+        if not verify_mixture_monotonicity(
+            prefix,
+            lambdas,
+            monotonicity_tolerance,
+            inversion_tolerance,
+        ):
+            raise MonotonicityFailure(
+                "equal-weight mixture log wealth is not monotone in candidate g"
+            )
+        try:
+            raw_lower = bisect_mixture_lower_bound(
+                prefix,
+                lambdas,
+                audit_risk,
+                inversion_tolerance,
+                inversion_tolerance,
+            )
+        except EmptyConfidenceSet as error:
+            raise EmptyConfidenceSet(f"{error}; prefix_step={end}") from error
+        running_lower = max(
+            running_lower, raw_lower, prefix[-1].logical_complement_lower
+        )
+        for fixed_lambda in lambdas:
+            candidate_min = wealth_multiplier(
+                fixed_lambda, prefix[-1].constant_term, 1.0, inversion_tolerance
+            )
+            if prefix[-1].support_terms or prefix[-1].support_minimum is not None:
+                candidate_min = min(
+                    candidate_min,
+                    validate_support_admissibility(
+                        end,
+                        prefix[-1].support_terms,
+                        fixed_lambda,
+                        1.0,
+                        inversion_tolerance,
+                        prefix[-1].support_minimum,
+                    ),
+                )
+            min_multiplier = min(min_multiplier, candidate_min)
+    final_g0 = log_mixture_wealth(steps, lambdas, 0.0, inversion_tolerance)
+    final_g1 = log_mixture_wealth(steps, lambdas, 1.0, inversion_tolerance)
+    final_bound = log_mixture_wealth(
+        steps, lambdas, running_lower, inversion_tolerance
+    )
+    return BoundEvaluation(
+        lower_complement_bound=running_lower,
+        upper_error_bound=1.0 - running_lower,
+        min_multiplier=min_multiplier,
+        monotonicity_status="passed",
+        final_log_wealth_g0=_json_number(final_g0),
+        final_log_wealth_g1=_json_number(final_g1),
+        final_log_wealth_at_bound=_json_number(final_bound),
+    )
