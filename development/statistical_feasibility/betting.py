@@ -390,6 +390,103 @@ def bisect_mixture_lower_bound(
     return low
 
 
+def _updated_component_log(
+    previous: float,
+    multiplier: float,
+) -> float:
+    """Extend one component log wealth without revisiting earlier steps."""
+
+    if previous == -math.inf or multiplier == 0.0:
+        return -math.inf
+    value = math.fsum((previous, math.log(multiplier)))
+    if math.isnan(value) or value == math.inf:
+        raise ControlledNumericalFailure("invalid incremental log wealth")
+    return value
+
+
+def _prefix_mixture_logs(
+    steps: Sequence[WealthStep],
+    lambdas: Tuple[float, ...],
+    candidate_g: float,
+    admissibility_tolerance: float,
+) -> Tuple[float, ...]:
+    """Evaluate every prefix mixture at one candidate in one forward scan."""
+
+    component_logs = [0.0 for _ in lambdas]
+    prefix_logs = []
+    for step_number, step in enumerate(steps, start=1):
+        for index, fixed_lambda in enumerate(lambdas):
+            if step.support_terms or step.support_minimum is not None:
+                validate_support_admissibility(
+                    step_number,
+                    step.support_terms,
+                    fixed_lambda,
+                    candidate_g,
+                    admissibility_tolerance,
+                    step.support_minimum,
+                )
+            multiplier = wealth_multiplier(
+                fixed_lambda,
+                step.constant_term,
+                candidate_g,
+                admissibility_tolerance,
+            )
+            component_logs[index] = _updated_component_log(
+                component_logs[index], multiplier
+            )
+        prefix_logs.append(
+            stable_logsumexp(component_logs) - math.log(len(lambdas))
+        )
+    return tuple(prefix_logs)
+
+
+def _running_mixture_lower_bound(
+    steps: Sequence[WealthStep],
+    lambdas: Tuple[float, ...],
+    audit_risk: float,
+    tolerance: float,
+    admissibility_tolerance: float,
+) -> float:
+    """Invert the maximum prefix rejection surface.
+
+    Every prefix mixture is non-increasing in the candidate complement mean.
+    Consequently, the root of their pointwise maximum is exactly the maximum
+    of the individually inverted prefix roots used by the running intersection.
+    """
+
+    threshold = math.log(1.0 / audit_risk)
+
+    def surface(candidate_g: float) -> Tuple[float, Tuple[float, ...]]:
+        prefix_logs = _prefix_mixture_logs(
+            steps, lambdas, candidate_g, admissibility_tolerance
+        )
+        return max(prefix_logs), prefix_logs
+
+    at_zero, _ = surface(0.0)
+    if at_zero < threshold:
+        return 0.0
+    at_one, at_one_prefixes = surface(1.0)
+    if at_one >= threshold:
+        first_empty = next(
+            index
+            for index, value in enumerate(at_one_prefixes, start=1)
+            if value >= threshold
+        )
+        raise EmptyConfidenceSet(
+            f"mixture confidence set is empty on [0, 1]; prefix_step={first_empty}"
+        )
+    low = 0.0
+    high = 1.0
+    while high - low > tolerance:
+        midpoint = (low + high) / 2.0
+        value, _ = surface(midpoint)
+        if value >= threshold:
+            low = midpoint
+        else:
+            high = midpoint
+    return low
+
+
 def evaluate_running_mixture_bound(
     steps: Sequence[WealthStep],
     lambda_grid: Sequence[float],
@@ -400,51 +497,74 @@ def evaluate_running_mixture_bound(
     """Invert one common equal-weight lambda mixture with a running intersection."""
 
     lambdas = tuple(float(value) for value in lambda_grid)
+    if not lambdas or len(set(lambdas)) != len(lambdas):
+        raise ValueError("lambda grid must be non-empty and unique")
+    if any(not math.isfinite(value) or not 0.0 < value <= 0.50 for value in lambdas):
+        raise ValueError("lambda grid contains an inadmissible value")
     if not steps:
         return BoundEvaluation(0.0, 1.0, 1.0, "passed", 0.0, 0.0, 0.0)
-    running_lower = 0.0
+    threshold = math.log(1.0 / audit_risk)
     min_multiplier = math.inf
-    for end in range(1, len(steps) + 1):
-        prefix = steps[:end]
-        if not verify_mixture_monotonicity(
-            prefix,
-            lambdas,
-            monotonicity_tolerance,
-            inversion_tolerance,
+    component_logs_by_candidate = [
+        [0.0 for _ in lambdas] for _ in range(65)
+    ]
+    for end, step in enumerate(steps, start=1):
+        prefix_grid = []
+        step_minimum = math.inf
+        for candidate_index in range(65):
+            candidate_g = candidate_index / 64.0
+            component_logs = component_logs_by_candidate[candidate_index]
+            for lambda_index, fixed_lambda in enumerate(lambdas):
+                support_minimum = math.inf
+                if step.support_terms or step.support_minimum is not None:
+                    support_minimum = validate_support_admissibility(
+                        end,
+                        step.support_terms,
+                        fixed_lambda,
+                        candidate_g,
+                        inversion_tolerance,
+                        step.support_minimum,
+                    )
+                multiplier = wealth_multiplier(
+                    fixed_lambda,
+                    step.constant_term,
+                    candidate_g,
+                    inversion_tolerance,
+                )
+                component_logs[lambda_index] = _updated_component_log(
+                    component_logs[lambda_index], multiplier
+                )
+                if candidate_index == 64:
+                    step_minimum = min(
+                        step_minimum, multiplier, support_minimum
+                    )
+            prefix_grid.append(
+                stable_logsumexp(component_logs) - math.log(len(lambdas))
+            )
+        if any(
+            current > previous + monotonicity_tolerance
+            for previous, current in zip(prefix_grid, prefix_grid[1:])
         ):
             raise MonotonicityFailure(
                 "equal-weight mixture log wealth is not monotone in candidate g"
             )
-        try:
-            raw_lower = bisect_mixture_lower_bound(
-                prefix,
-                lambdas,
-                audit_risk,
-                inversion_tolerance,
-                inversion_tolerance,
+        if prefix_grid[-1] >= threshold:
+            raise EmptyConfidenceSet(
+                f"mixture confidence set is empty on [0, 1]; prefix_step={end}"
             )
-        except EmptyConfidenceSet as error:
-            raise EmptyConfidenceSet(f"{error}; prefix_step={end}") from error
-        running_lower = max(
-            running_lower, raw_lower, prefix[-1].logical_complement_lower
-        )
-        for fixed_lambda in lambdas:
-            candidate_min = wealth_multiplier(
-                fixed_lambda, prefix[-1].constant_term, 1.0, inversion_tolerance
-            )
-            if prefix[-1].support_terms or prefix[-1].support_minimum is not None:
-                candidate_min = min(
-                    candidate_min,
-                    validate_support_admissibility(
-                        end,
-                        prefix[-1].support_terms,
-                        fixed_lambda,
-                        1.0,
-                        inversion_tolerance,
-                        prefix[-1].support_minimum,
-                    ),
-                )
-            min_multiplier = min(min_multiplier, candidate_min)
+        min_multiplier = min(min_multiplier, step_minimum)
+
+    raw_lower = _running_mixture_lower_bound(
+        steps,
+        lambdas,
+        audit_risk,
+        inversion_tolerance,
+        inversion_tolerance,
+    )
+    running_lower = max(
+        raw_lower,
+        max(step.logical_complement_lower for step in steps),
+    )
     final_g0 = log_mixture_wealth(steps, lambdas, 0.0, inversion_tolerance)
     final_g1 = log_mixture_wealth(steps, lambdas, 1.0, inversion_tolerance)
     final_bound = log_mixture_wealth(

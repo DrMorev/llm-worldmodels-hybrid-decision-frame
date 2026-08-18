@@ -11,17 +11,27 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from development.statistical_feasibility.betting import (
+    ControlledNumericalFailure,
+    EmptyConfidenceSet,
+    MonotonicityFailure,
+    SupportAdmissibilityFailure,
+    SupportTerm,
     WealthStep,
     bisect_mixture_lower_bound,
+    evaluate_running_mixture_bound,
     log_mixture_wealth,
     stable_logsumexp,
+    validate_support_admissibility,
     verify_mixture_monotonicity,
+    wealth_multiplier,
 )
 from development.statistical_feasibility.core import (
     STAGE1_SCENARIOS,
     Stage1Config,
+    stable_seed,
     stage1_arms,
 )
 from development.statistical_feasibility.proxies import (
@@ -401,6 +411,208 @@ class Stage1AuditFindingTests(unittest.TestCase):
             "truth", "joint_dangerous_error", "ppi", "h_i", "stable_false_belief",
             "component_error_primary", "component_error_verifier",
         })
+
+
+def _slow_running_mixture_reference(
+    steps,
+    lambda_grid=(.05, .10, .25, .50),
+    audit_risk=.05,
+    inversion_tolerance=1e-10,
+    monotonicity_tolerance=1e-10,
+):
+    """Test-local copy of the accepted pre-optimization prefix algorithm."""
+
+    if not steps:
+        return (0.0, 1.0, 1.0, "passed", 0.0, 0.0, 0.0)
+    running_lower = 0.0
+    min_multiplier = math.inf
+    for end in range(1, len(steps) + 1):
+        prefix = steps[:end]
+        if not verify_mixture_monotonicity(
+            prefix, lambda_grid, monotonicity_tolerance, inversion_tolerance
+        ):
+            raise MonotonicityFailure("reference mixture monotonicity failure")
+        try:
+            raw_lower = bisect_mixture_lower_bound(
+                prefix,
+                lambda_grid,
+                audit_risk,
+                inversion_tolerance,
+                inversion_tolerance,
+            )
+        except EmptyConfidenceSet as error:
+            raise EmptyConfidenceSet(f"{error}; prefix_step={end}") from error
+        running_lower = max(
+            running_lower, raw_lower, prefix[-1].logical_complement_lower
+        )
+        for fixed_lambda in lambda_grid:
+            candidate_min = wealth_multiplier(
+                fixed_lambda,
+                prefix[-1].constant_term,
+                1.0,
+                inversion_tolerance,
+            )
+            if prefix[-1].support_terms or prefix[-1].support_minimum is not None:
+                candidate_min = min(
+                    candidate_min,
+                    validate_support_admissibility(
+                        end,
+                        prefix[-1].support_terms,
+                        fixed_lambda,
+                        1.0,
+                        inversion_tolerance,
+                        prefix[-1].support_minimum,
+                    ),
+                )
+            min_multiplier = min(min_multiplier, candidate_min)
+    return (
+        running_lower,
+        1.0 - running_lower,
+        min_multiplier,
+        "passed",
+        log_mixture_wealth(steps, lambda_grid, 0.0, inversion_tolerance),
+        log_mixture_wealth(steps, lambda_grid, 1.0, inversion_tolerance),
+        log_mixture_wealth(
+            steps, lambda_grid, running_lower, inversion_tolerance
+        ),
+    )
+
+
+class MixturePerformanceEquivalenceTests(unittest.TestCase):
+    @staticmethod
+    def _optimized_tuple(steps):
+        result = evaluate_running_mixture_bound(
+            steps, (.05, .10, .25, .50), .05, 1e-10, 1e-10
+        )
+        return (
+            result.lower_complement_bound,
+            result.upper_error_bound,
+            result.min_multiplier,
+            result.monotonicity_status,
+            result.final_log_wealth_g0,
+            result.final_log_wealth_g1,
+            result.final_log_wealth_at_bound,
+        )
+
+    def assert_reference_equivalent(self, steps):
+        reference = _slow_running_mixture_reference(steps)
+        optimized = self._optimized_tuple(steps)
+        self.assertEqual(reference[3], optimized[3])
+        for expected, observed in zip(reference[:3] + reference[4:], optimized[:3] + optimized[4:]):
+            if isinstance(expected, str) or isinstance(observed, str):
+                self.assertEqual(expected, observed)
+            else:
+                self.assertLessEqual(abs(expected - observed), 1e-10)
+
+    def test_52_every_prefix_matches_slow_reference_on_generated_audit(self):
+        config = Stage1Config(
+            population_size=40,
+            budget=20,
+            replicates=1,
+            scenario_ids=("low_shared_fragile_mechanism",),
+        )
+        population = generate_stage1_population(
+            "low_shared_fragile_mechanism", 40, 52001, config
+        ).population
+        arm = {row.conceptual_arm: row for row in stage1_arms(8, .2)}["SP"]
+        audit = simulate_named_audit(population, arm, 20, config.ridge, 52002)
+        for end in range(1, len(audit["wealth_steps"]) + 1):
+            with self.subTest(prefix=end):
+                self.assert_reference_equivalent(audit["wealth_steps"][:end])
+
+    def test_53_deterministic_boundary_trajectories_match_reference(self):
+        trajectories = (
+            (),
+            (WealthStep(.0, .0),),
+            (WealthStep(.5, .25), WealthStep(1.25, .50)),
+            tuple(WealthStep(.8 + index / 20, index / 20) for index in range(1, 10)),
+        )
+        for steps in trajectories:
+            with self.subTest(length=len(steps)):
+                self.assert_reference_equivalent(steps)
+
+    def test_54_empty_confidence_set_status_matches_reference(self):
+        steps = (WealthStep(100.0, 0.0),)
+        with self.assertRaises(EmptyConfidenceSet):
+            _slow_running_mixture_reference(steps)
+        with self.assertRaises(EmptyConfidenceSet):
+            self._optimized_tuple(steps)
+
+    def test_55_support_admissibility_status_matches_reference(self):
+        support = SupportTerm("x", 0, 0.0, 1.0, 0.0, 0.0, -3.0)
+        steps = (WealthStep(.5, 0.0, (support,), support, 1),)
+        with self.assertRaises(SupportAdmissibilityFailure):
+            _slow_running_mixture_reference(steps)
+        with self.assertRaises(SupportAdmissibilityFailure):
+            self._optimized_tuple(steps)
+
+    def test_56_incremental_monotonicity_protection_is_active(self):
+        counter = iter(float(index) for index in range(1000))
+        with mock.patch(
+            "development.statistical_feasibility.betting.stable_logsumexp",
+            side_effect=lambda values: next(counter),
+        ):
+            with self.assertRaises(MonotonicityFailure):
+                self._optimized_tuple((WealthStep(.5, 0.0),))
+
+    def test_57_numerical_failure_status_matches_reference(self):
+        steps = (WealthStep(math.inf, 0.0),)
+        with self.assertRaises(ControlledNumericalFailure):
+            _slow_running_mixture_reference(steps)
+        with self.assertRaises(ControlledNumericalFailure):
+            self._optimized_tuple(steps)
+
+    def test_58_medium_generated_trajectory_matches_reference(self):
+        config = Stage1Config(
+            population_size=120,
+            budget=80,
+            replicates=1,
+            scenario_ids=("mixed_fragile_and_stable_failure",),
+        )
+        population = generate_stage1_population(
+            "mixed_fragile_and_stable_failure", 120, 58001, config
+        ).population
+        arm = {row.conceptual_arm: row for row in stage1_arms(8, .2)}["UP"]
+        audit = simulate_named_audit(population, arm, 80, config.ridge, 58002)
+        for end in (1, 10, 40, 80):
+            with self.subTest(prefix=end):
+                self.assert_reference_equivalent(audit["wealth_steps"][:end])
+
+    def test_59_independent_audits_are_execution_order_independent(self):
+        config = Stage1Config(
+            population_size=50,
+            budget=10,
+            replicates=1,
+            scenario_ids=("low_shared_fragile_mechanism",),
+        )
+        population = generate_stage1_population(
+            "low_shared_fragile_mechanism", 50, 59001, config
+        ).population
+        arms = {
+            row.conceptual_arm: row
+            for row in stage1_arms(8, .2)
+            if row.conceptual_arm in {"U0", "SP"}
+        }
+        work_units = tuple(
+            (arm_id, stable_seed(59002, "order-independent", arm_id, replicate))
+            for arm_id in ("U0", "SP")
+            for replicate in range(3)
+        )
+
+        def execute(units):
+            results = {}
+            for arm_id, seed in units:
+                audit = simulate_named_audit(
+                    population, arms[arm_id], 10, config.ridge, seed
+                )
+                results[(arm_id, seed)] = (
+                    tuple(audit["selection_order"]),
+                    audit["errors_observed"],
+                    tuple(step.constant_term for step in audit["wealth_steps"]),
+                )
+            return results
+
+        self.assertEqual(execute(work_units), execute(reversed(work_units)))
 
 
 if __name__ == "__main__":
