@@ -71,6 +71,8 @@ from .scenarios import (
     generate_fixture,
     generate_stage1_population,
     generate_stage2_population,
+    calibrate_stage2_margin_normalization,
+    calibrate_stage2_risk_parameters,
     permute_ppi_within_observable_strata,
     stage2_control_parameters,
     Stage2GeneratorParameters,
@@ -1053,7 +1055,22 @@ def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFiniteP
     }
 
 
-STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v2"
+STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v3"
+
+STAGE2_PREFLIGHT_MARGIN_REPLICATES = 3
+STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES = 200
+STAGE2_PREFLIGHT_ADDITIONAL_CONTROL_REPLICATES = 5
+STAGE2_PREFLIGHT_CONTROL_ANCHOR = (3e-2, 0.5)
+STAGE2_PREFLIGHT_NEGATIVE_CONTROLS = (
+    "pi_h_zero",
+    "permuted_ppi",
+    "constant_ppi",
+)
+STAGE2_PREFLIGHT_ADDITIONAL_CONTROLS = (
+    "fragility_unrelated_to_error",
+    "stable_shared_false_belief",
+    "favourable_high_fragility",
+)
 
 
 @dataclass(frozen=True)
@@ -1065,6 +1082,7 @@ class Stage2PopulationWorkUnit:
     normalization: Stage2MarginCalibration
     config: Stage2Config
     capture_replay_evidence: bool = False
+    audit_seed_namespace: str = "evaluation"
 
 
 def stage2_replay_replicate(config: Stage2Config | None = None) -> int:
@@ -1267,6 +1285,21 @@ def _stage2_prefix_record(
     }
 
 
+def _stage2_audit_seed_master(work_unit: Stage2PopulationWorkUnit) -> int:
+    """Resolve the declared namespace without falling back to evaluation seeds."""
+
+    audit_seed_masters = {
+        "evaluation": work_unit.config.evaluation_master_seed,
+        "evaluation_controls": work_unit.config.evaluation_master_seed,
+        "negative_control_calibration": work_unit.config.negative_control_master_seed,
+        "negative_control_preflight": work_unit.config.negative_control_master_seed,
+    }
+    try:
+        return audit_seed_masters[work_unit.audit_seed_namespace]
+    except KeyError as error:
+        raise ValueError("unknown Stage 2 audit seed namespace") from error
+
+
 def _run_stage2_population_work_unit(
     work_unit: Stage2PopulationWorkUnit,
 ) -> dict:
@@ -1284,6 +1317,7 @@ def _run_stage2_population_work_unit(
     rows: List[dict] = []
     replay_audits: List[dict] = []
     population_record = None
+    audit_seed_master = _stage2_audit_seed_master(work_unit)
     for arm in stage2_trajectory_arms(work_unit.config):
         selected_forensic_arm = (
             work_unit.capture_replay_evidence
@@ -1297,7 +1331,8 @@ def _run_stage2_population_work_unit(
         )
         execution_mode = "replay_grade" if selected_forensic_arm else "lean"
         audit_seed = stable_seed(
-            work_unit.config.evaluation_master_seed,
+            audit_seed_master,
+            work_unit.audit_seed_namespace,
             work_unit.parameters.p_jde_target,
             work_unit.parameters.pi_h,
             work_unit.parameters.control_id,
@@ -1445,13 +1480,20 @@ def build_stage2_control_work_units(
 
     config = config or Stage2Config()
     config.validate()
-    if seed_namespace not in {"negative_control_calibration", "evaluation_controls"}:
+    if seed_namespace not in {
+        "negative_control_calibration",
+        "negative_control_preflight",
+        "evaluation_controls",
+    }:
         raise ValueError("unknown Stage 2 control seed namespace")
     if replicate_count <= 0:
         raise ValueError("Stage 2 control replicate count must be positive")
     master_seed = (
         config.negative_control_master_seed
-        if seed_namespace == "negative_control_calibration"
+        if seed_namespace in {
+            "negative_control_calibration",
+            "negative_control_preflight",
+        }
         else config.evaluation_master_seed
     )
     units = []
@@ -1474,6 +1516,7 @@ def build_stage2_control_work_units(
                     normalization,
                     config,
                     False,
+                    seed_namespace,
                 )
             )
     return tuple(units)
@@ -1667,6 +1710,299 @@ def stage2_manifest(
             "selection_is_outcome_independent": True,
         },
         "confirmatory_manifest": False,
+    }
+
+
+def stage2_preflight_plan(config: Stage2Config | None = None) -> dict:
+    """Return the frozen, development-only control-preflight plan.
+
+    This deliberately contains no evaluation or bootstrap work units.  The
+    values are manifest material rather than command-line scientific knobs.
+    """
+
+    config = config or Stage2Config()
+    config.validate()
+    return {
+        "manifest_type": "development_only_stage2_control_preflight",
+        "configuration": asdict(config),
+        "margin_calibration": {
+            "replicates": STAGE2_PREFLIGHT_MARGIN_REPLICATES,
+            "seed_namespace": "margin_and_risk_calibration",
+            "observable_inputs_only": True,
+        },
+        "risk_calibration": {
+            "seed_count": 10,
+            "seed_namespace": "margin_and_risk_calibration",
+            "inspected_quantity": "aggregate_true_jde_prevalence_only",
+            "cell_count": len(config.p_jde_targets) * len(config.pi_h_values),
+        },
+        "negative_control_calibration": {
+            "control_ids": list(STAGE2_PREFLIGHT_NEGATIVE_CONTROLS),
+            "replicates_per_control": STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES,
+            "seed_namespace": "negative_control_calibration",
+            "gamma_percentile": 0.975,
+            "anchor": {
+                "p_jde_target": STAGE2_PREFLIGHT_CONTROL_ANCHOR[0],
+                "pi_H": STAGE2_PREFLIGHT_CONTROL_ANCHOR[1],
+            },
+        },
+        "additional_control_preflight": {
+            "control_ids": list(STAGE2_PREFLIGHT_ADDITIONAL_CONTROLS),
+            "replicates_per_control": STAGE2_PREFLIGHT_ADDITIONAL_CONTROL_REPLICATES,
+            "seed_namespace": "negative_control_preflight",
+        },
+        "not_consumed_seed_namespaces": ["evaluation", "bootstrap"],
+        "full_stage2_evaluation_executed": False,
+    }
+
+
+def _stage2_margin_calibration(
+    config: Stage2Config,
+) -> Tuple[Stage2MarginCalibration, Tuple[int, ...]]:
+    """Calibrate M only from original observable magnitudes on reserved seeds."""
+
+    provisional = Stage2MarginCalibration(3.0, 3.0, config.margin_percentile, 0)
+    parameters = Stage2GeneratorParameters(3e-2, 0.5, 2.5, 0.0, "primary")
+    seeds = tuple(
+        stable_seed(config.calibration_master_seed, "margin-calibration", index)
+        for index in range(STAGE2_PREFLIGHT_MARGIN_REPLICATES)
+    )
+    observable_outputs: List[ObservableCaseOutputs] = []
+    for seed in seeds:
+        generated = generate_stage2_population(parameters, seed, provisional, config)
+        observable_outputs.extend(generated.observable_outputs)
+    return (
+        calibrate_stage2_margin_normalization(
+            observable_outputs, config.tau_primary, config.tau_verifier
+        ),
+        seeds,
+    )
+
+
+def _stage2_risk_calibrations(
+    normalization: Stage2MarginCalibration,
+    config: Stage2Config,
+) -> Tuple[Dict[Tuple[float, float], Stage2GeneratorParameters], Tuple[int, ...]]:
+    """Calibrate every frozen risk/mechanism cell before control execution."""
+
+    seeds = tuple(
+        stable_seed(config.calibration_master_seed, "risk-calibration", index)
+        for index in range(10)
+    )
+    calibrations: Dict[Tuple[float, float], Stage2GeneratorParameters] = {}
+    for p_jde_target in config.p_jde_targets:
+        for pi_h in config.pi_h_values:
+            calibration = calibrate_stage2_risk_parameters(
+                p_jde_target, pi_h, seeds, normalization, config
+            )
+            calibrations[(p_jde_target, pi_h)] = calibration.parameters
+    return calibrations, seeds
+
+
+def _stage2_control_g_values(
+    results: Sequence[Mapping[str, object]],
+    control_ids: Sequence[str],
+    config: Stage2Config,
+) -> Dict[str, List[float]]:
+    """Extract G=1-U_SP/U_UP at B=500 from complete paired control trajectories."""
+
+    expected = set(control_ids)
+    values = {control_id: [] for control_id in control_ids}
+    for result in results:
+        rows = [
+            row for row in result["rows"] if row["B"] == max(config.budgets)
+        ]
+        if not rows:
+            raise InvalidDevelopmentRun("control work unit lacks its maximum-B row")
+        control_id = str(rows[0]["control_id"])
+        if control_id not in expected or any(
+            str(row["control_id"]) != control_id for row in rows
+        ):
+            raise InvalidDevelopmentRun("control work-unit identity is inconsistent")
+        up = [row for row in rows if row["conceptual_arm"] == "UP"]
+        sp = [row for row in rows if row["conceptual_arm"] == "SP"]
+        if len(up) != 1 or len(sp) != len(config.epsilon_values):
+            raise InvalidDevelopmentRun("control work unit lacks paired UP/SP trajectories")
+        upper_up = up[0]["final_upper_bound"]
+        if upper_up is None or float(upper_up) <= 0.0:
+            raise InvalidDevelopmentRun("control G has an undefined UP denominator")
+        for row in sp:
+            upper_sp = row["final_upper_bound"]
+            if upper_sp is None:
+                raise InvalidDevelopmentRun("control G has an undefined SP numerator")
+            values[control_id].append(1.0 - float(upper_sp) / float(upper_up))
+    expected_count = STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES * len(
+        config.epsilon_values
+    )
+    for control_id, control_values in values.items():
+        if len(control_values) != expected_count:
+            raise InvalidDevelopmentRun(
+                f"control {control_id} has an incomplete G calibration sample"
+            )
+    return values
+
+
+def _execution_environment() -> dict:
+    """Portable, non-sensitive execution context retained with development output."""
+
+    return {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+        "os_cpu_count": os.cpu_count(),
+    }
+
+
+def _write_stage2_preflight_artifacts(
+    output_directory: Path,
+    manifest: Mapping[str, object],
+    results: Sequence[Mapping[str, object]],
+    report: Mapping[str, object],
+) -> dict:
+    """Write only compact control-preflight evidence, never evaluation traces."""
+
+    _ensure_external_output(output_directory, _repository_root())
+    output_directory.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "manifest": output_directory / "stage2_preflight_manifest.json",
+        "records": output_directory / "stage2_preflight_control_records.jsonl",
+        "report": output_directory / "stage2_preflight_report.json",
+    }
+    if any(path.exists() for path in paths.values()):
+        raise FileExistsError("Stage 2 preflight output directory already contains an artifact")
+    ordered_rows = [
+        row
+        for result in sorted(results, key=lambda item: str(item["unit_id"]))
+        for row in result["rows"]
+    ]
+    record_bytes = b"".join(_canonical_json_bytes(row) + b"\n" for row in ordered_rows)
+    manifest_bytes = _canonical_json_bytes(manifest)
+    report_bytes = _canonical_json_bytes(report)
+    paths["manifest"].write_bytes(manifest_bytes)
+    paths["records"].write_bytes(record_bytes)
+    paths["report"].write_bytes(report_bytes)
+    return {
+        f"{name}_path": str(path)
+        for name, path in paths.items()
+    } | {
+        "manifest_size_bytes": len(manifest_bytes),
+        "manifest_sha256": _sha256_bytes(manifest_bytes),
+        "records_size_bytes": len(record_bytes),
+        "records_sha256": _sha256_bytes(record_bytes),
+        "records_count": len(ordered_rows),
+        "report_size_bytes": len(report_bytes),
+        "report_sha256": _sha256_bytes(report_bytes),
+    }
+
+
+def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
+    """Run only the frozen Stage 2 calibration and mandatory control preflight.
+
+    The entrypoint intentionally has no evaluation or bootstrap switch.  Its
+    work units use calibration/negative-control namespaces only, and it writes
+    an execution manifest before returning a compact, external receipt.
+    """
+
+    config = Stage2Config()
+    config.validate()
+    if workers <= 0:
+        raise ValueError("Stage 2 preflight worker count must be positive")
+    _ensure_external_output(output_directory, _repository_root())
+    provenance = inspect_git_provenance(_repository_root())
+    if not provenance.get("head"):
+        raise InvalidDevelopmentRun(
+            "Stage 2 preflight requires resolvable Git HEAD provenance"
+        )
+    plan = stage2_preflight_plan(config)
+    total_started = time.perf_counter()
+    margin_started = time.perf_counter()
+    normalization, margin_seeds = _stage2_margin_calibration(config)
+    margin_seconds = time.perf_counter() - margin_started
+    risk_started = time.perf_counter()
+    calibrations, risk_seeds = _stage2_risk_calibrations(normalization, config)
+    risk_seconds = time.perf_counter() - risk_started
+    base_parameters = calibrations[STAGE2_PREFLIGHT_CONTROL_ANCHOR]
+    negative_started = time.perf_counter()
+    negative_units = build_stage2_control_work_units(
+        base_parameters,
+        normalization,
+        STAGE2_PREFLIGHT_NEGATIVE_CONTROLS,
+        STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES,
+        "negative_control_calibration",
+        config,
+    )
+    negative_results = execute_stage2_work_units(negative_units, workers)
+    gamma_nc = empirical_gamma_nc(
+        _stage2_control_g_values(
+            negative_results, STAGE2_PREFLIGHT_NEGATIVE_CONTROLS, config
+        )
+    )
+    negative_seconds = time.perf_counter() - negative_started
+    additional_started = time.perf_counter()
+    additional_units = build_stage2_control_work_units(
+        base_parameters,
+        normalization,
+        STAGE2_PREFLIGHT_ADDITIONAL_CONTROLS,
+        STAGE2_PREFLIGHT_ADDITIONAL_CONTROL_REPLICATES,
+        "negative_control_preflight",
+        config,
+    )
+    additional_results = execute_stage2_work_units(additional_units, workers)
+    additional_seconds = time.perf_counter() - additional_started
+    all_results = [*negative_results, *additional_results]
+    if not all(
+        bool(result["identity_sentinel_passed"])
+        and bool(result["structural_invariance_passed"])
+        for result in all_results
+    ):
+        raise InvalidDevelopmentRun("Stage 2 mandatory structural control failed")
+    manifest = {
+        "schema_version": "ppi-stage2-control-preflight-v1",
+        "notice": DEVELOPMENT_ONLY_NOTICE,
+        "code_version": STAGE2_CODE_VERSION,
+        "git_provenance": provenance,
+        "environment": _execution_environment(),
+        "plan": plan,
+        "margin_normalization": asdict(normalization),
+        "margin_calibration_seeds": list(margin_seeds),
+        "risk_calibration_seeds": list(risk_seeds),
+        "risk_calibrations": [
+            {"p_jde_target": key[0], "pi_H": key[1], **asdict(calibrations[key])}
+            for key in sorted(calibrations)
+        ],
+        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "workers": workers,
+        "evaluation_or_bootstrap_work_executed": False,
+    }
+    report = {
+        "schema_version": "ppi-stage2-control-preflight-report-v1",
+        "manifest_type": manifest["schema_version"],
+        "phase_runtimes_seconds": {
+            "margin_calibration": margin_seconds,
+            "risk_calibration": risk_seconds,
+            "negative_control_calibration": negative_seconds,
+            "additional_control_preflight": additional_seconds,
+            "total": time.perf_counter() - total_started,
+        },
+        "work_unit_counts": {
+            "negative_control_calibration": len(negative_units),
+            "additional_control_preflight": len(additional_units),
+        },
+        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "evaluation_or_bootstrap_work_executed": False,
+    }
+    artifacts = _write_stage2_preflight_artifacts(
+        output_directory, manifest, all_results, report
+    )
+    return {
+        "mode": "stage2_preflight",
+        "development_only": True,
+        "git_head": provenance["head"],
+        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "phase_runtimes_seconds": report["phase_runtimes_seconds"],
+        "work_unit_counts": report["work_unit_counts"],
+        "evaluation_or_bootstrap_work_executed": False,
+        "artifacts": artifacts,
     }
 
 
@@ -2433,6 +2769,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="run the bounded development-only PPI Stage 1 plumbing configuration",
     )
     parser.add_argument(
+        "--stage2-preflight",
+        action="store_true",
+        help=(
+            "run only frozen Stage 2 calibration and mandatory-control preflight; "
+            "never runs evaluation or bootstrap workloads"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -2444,12 +2788,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="replay serialized pre-reveal draws from an existing JSON artifact only",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="required positive process count for --stage2-preflight only",
+    )
     args = parser.parse_args(argv)
     selected_modes = sum(
-        bool(value) for value in (args.smoke, args.ppi_stage1, args.replay_artifact)
+        bool(value)
+        for value in (
+            args.smoke,
+            args.ppi_stage1,
+            args.stage2_preflight,
+            args.replay_artifact,
+        )
     )
     if selected_modes != 1:
-        parser.error("choose exactly one of --smoke, --ppi-stage1, or --replay-artifact")
+        parser.error(
+            "choose exactly one of --smoke, --ppi-stage1, --stage2-preflight, "
+            "or --replay-artifact"
+        )
+    if args.workers is not None and not args.stage2_preflight:
+        parser.error("--workers is supported only with --stage2-preflight")
     if args.replay_artifact:
         try:
             result = replay_artifact(args.replay_artifact)
@@ -2468,6 +2829,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = run_ppi_stage1(args.output_dir)
         except (InvalidDevelopmentRun, ControlledNumericalFailure, ValueError) as error:
             print(f"INVALID DEVELOPMENT RUN: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True, indent=2))
+        return 0
+    if args.stage2_preflight:
+        if args.output_dir is None:
+            parser.error("--stage2-preflight requires --output-dir outside the repository")
+        if args.workers is None or args.workers <= 0:
+            parser.error("--stage2-preflight requires --workers with a positive value")
+        print(DEVELOPMENT_ONLY_NOTICE)
+        print(
+            "Stage 2 preflight runs frozen calibration and mandatory controls only; "
+            "it does not execute evaluation or bootstrap workloads."
+        )
+        try:
+            result = run_stage2_preflight(args.output_dir, args.workers)
+        except (
+            InvalidDevelopmentRun,
+            ControlledNumericalFailure,
+            OSError,
+            ValueError,
+        ) as error:
+            print(f"INVALID STAGE 2 PREFLIGHT: {error}", file=sys.stderr)
             return 2
         print(json.dumps(result, sort_keys=True, indent=2))
         return 0

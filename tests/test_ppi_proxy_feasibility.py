@@ -49,8 +49,10 @@ from development.statistical_feasibility.proxies import (
 )
 from development.statistical_feasibility.run import (
     LeanAuditWorkUnit,
+    _stage2_audit_seed_master,
     _lambda_grid_digest,
     aggregate_stage2_delta,
+    build_stage2_control_work_units,
     build_stage2_primary_work_units,
     classify_stage2_development,
     empirical_gamma_nc,
@@ -58,8 +60,10 @@ from development.statistical_feasibility.run import (
     replay_artifact,
     retain_stage1_trace,
     run_ppi_stage1,
+    main as run_main,
     simulate_named_audit,
     stage2_manifest,
+    stage2_preflight_plan,
     stage2_replay_replicate,
     summarize_stage2_cells,
 )
@@ -935,6 +939,95 @@ class Stage2LeanExecutionTests(unittest.TestCase):
         self.assertEqual(
             classify_stage2_development(cells, failed), "INVALID_DEVELOPMENT"
         )
+
+    def test_70_preflight_plan_consumes_no_evaluation_or_bootstrap_namespace(self):
+        config = Stage2Config()
+        plan = stage2_preflight_plan(config)
+        self.assertEqual(
+            plan["not_consumed_seed_namespaces"], ["evaluation", "bootstrap"]
+        )
+        normalization = Stage2MarginCalibration(3.0, 3.0, .99, 10)
+        parameters = Stage2GeneratorParameters(.03, .5, 2.5, 0.0, "primary")
+        calibration_units = build_stage2_control_work_units(
+            parameters,
+            normalization,
+            plan["negative_control_calibration"]["control_ids"],
+            1,
+            "negative_control_calibration",
+            config,
+        )
+        preflight_units = build_stage2_control_work_units(
+            parameters,
+            normalization,
+            plan["additional_control_preflight"]["control_ids"],
+            1,
+            "negative_control_preflight",
+            config,
+        )
+        self.assertEqual(
+            {unit.audit_seed_namespace for unit in calibration_units},
+            {"negative_control_calibration"},
+        )
+        self.assertEqual(
+            {unit.audit_seed_namespace for unit in preflight_units},
+            {"negative_control_preflight"},
+        )
+        self.assertEqual(
+            {_stage2_audit_seed_master(unit) for unit in (*calibration_units, *preflight_units)},
+            {config.negative_control_master_seed},
+        )
+        self.assertNotIn(
+            config.evaluation_master_seed,
+            {unit.population_seed for unit in (*calibration_units, *preflight_units)},
+        )
+
+    def test_71_preflight_plan_is_exactly_the_frozen_stage2_configuration(self):
+        config = Stage2Config()
+        plan = stage2_preflight_plan(config)
+        self.assertEqual(plan["configuration"], {
+            key: value for key, value in config.__dict__.items()
+        })
+        self.assertEqual(plan["negative_control_calibration"]["replicates_per_control"], 200)
+        self.assertEqual(plan["additional_control_preflight"]["replicates_per_control"], 5)
+        self.assertEqual(
+            plan["negative_control_calibration"]["anchor"],
+            {"p_jde_target": .03, "pi_H": .5},
+        )
+        self.assertFalse(plan["full_stage2_evaluation_executed"])
+
+    def test_72_preflight_cli_requires_explicit_safe_options(self):
+        output_directory = Path(tempfile.gettempdir()) / "stage2-preflight-cli-test-output"
+        with mock.patch(
+            "development.statistical_feasibility.run.run_stage2_preflight",
+            return_value={"mode": "stage2_preflight"},
+        ) as preflight:
+            self.assertEqual(
+                run_main(
+                    [
+                        "--stage2-preflight",
+                        "--workers",
+                        "2",
+                        "--output-dir",
+                        str(output_directory),
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(preflight.call_args.args, (output_directory, 2))
+        with self.assertRaises(SystemExit) as missing_workers:
+            run_main(["--stage2-preflight", "--output-dir", str(output_directory)])
+        self.assertEqual(missing_workers.exception.code, 2)
+        with self.assertRaises(SystemExit) as invalid_workers:
+            run_main(
+                [
+                    "--stage2-preflight",
+                    "--workers",
+                    "0",
+                    "--output-dir",
+                    str(output_directory),
+                ]
+            )
+        self.assertEqual(invalid_workers.exception.code, 2)
 
 
 if __name__ == "__main__":
