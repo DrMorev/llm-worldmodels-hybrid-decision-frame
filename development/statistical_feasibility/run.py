@@ -84,6 +84,37 @@ class InvalidDevelopmentRun(RuntimeError):
     pass
 
 
+class Stage2ControlBoundFailure(InvalidDevelopmentRun):
+    """A control G value cannot be formed without discarding or imputing data."""
+
+    def __init__(self, failure_record: Mapping[str, object]):
+        self.failure_record = dict(failure_record)
+        super().__init__(
+            "control G has an undefined "
+            f"{self.failure_record['bound_role']}: "
+            f"control_id={self.failure_record['control_id']}, "
+            f"replicate_id={self.failure_record['replicate_id']}, "
+            f"arm={self.failure_record['conceptual_arm']}, "
+            f"epsilon_samp={self.failure_record['epsilon_samp']}, "
+            f"B={self.failure_record['B']}"
+        )
+
+
+class Stage2PreflightFailureReceipt(InvalidDevelopmentRun):
+    """Controlled nonzero preflight outcome with an external evidence receipt."""
+
+    def __init__(self, failure_record: Mapping[str, object], artifacts: Mapping[str, object]):
+        self.failure_record = dict(failure_record)
+        self.artifacts = dict(artifacts)
+        super().__init__(
+            "Stage 2 preflight stopped before gamma_NC calibration; "
+            f"failure receipt: {self.artifacts['report_path']}; "
+            f"control_id={self.failure_record['control_id']}, "
+            f"replicate_id={self.failure_record['replicate_id']}, "
+            f"arm={self.failure_record['conceptual_arm']}"
+        )
+
+
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -1055,7 +1086,7 @@ def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFiniteP
     }
 
 
-STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v3"
+STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v4"
 
 STAGE2_PREFLIGHT_MARGIN_REPLICATES = 3
 STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES = 200
@@ -1808,6 +1839,29 @@ def _stage2_control_g_values(
 
     expected = set(control_ids)
     values = {control_id: [] for control_id in control_ids}
+
+    def undefined_bound_failure(
+        control_id: str, row: Mapping[str, object], bound_role: str
+    ) -> Stage2ControlBoundFailure:
+        return Stage2ControlBoundFailure(
+            {
+                "failure_class": "undefined_control_bound",
+                "reason": "gamma_NC was not calibrated because a required control "
+                "bound is undefined; no replicate was excluded or imputed",
+                "bound_role": bound_role,
+                "control_id": control_id,
+                "replicate_id": row["replicate_id"],
+                "conceptual_arm": row["conceptual_arm"],
+                "epsilon_samp": row["epsilon_samp"],
+                "B": row["B"],
+                "validity_status": row["validity_status"],
+                "empty_confidence_set": row["empty_confidence_set"],
+                "monotonicity_status": row["monotonicity_status"],
+                "support_status": row["support_status"],
+                "warnings": row["warnings"],
+            }
+        )
+
     for result in results:
         rows = [
             row for row in result["rows"] if row["B"] == max(config.budgets)
@@ -1825,11 +1879,11 @@ def _stage2_control_g_values(
             raise InvalidDevelopmentRun("control work unit lacks paired UP/SP trajectories")
         upper_up = up[0]["final_upper_bound"]
         if upper_up is None or float(upper_up) <= 0.0:
-            raise InvalidDevelopmentRun("control G has an undefined UP denominator")
+            raise undefined_bound_failure(control_id, up[0], "UP denominator")
         for row in sp:
             upper_sp = row["final_upper_bound"]
             if upper_sp is None:
-                raise InvalidDevelopmentRun("control G has an undefined SP numerator")
+                raise undefined_bound_failure(control_id, row, "SP numerator")
             values[control_id].append(1.0 - float(upper_sp) / float(upper_up))
     expected_count = STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES * len(
         config.epsilon_values
@@ -1895,6 +1949,71 @@ def _write_stage2_preflight_artifacts(
     }
 
 
+def _stage2_preflight_manifest(
+    config: Stage2Config,
+    provenance: Mapping[str, object],
+    plan: Mapping[str, object],
+    normalization: Stage2MarginCalibration,
+    margin_seeds: Sequence[int],
+    risk_seeds: Sequence[int],
+    calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
+    workers: int,
+    gamma_nc: Optional[Mapping[str, float]],
+    failure_record: Optional[Mapping[str, object]] = None,
+) -> dict:
+    """Build a complete preflight manifest for either success or a controlled stop."""
+
+    return {
+        "schema_version": "ppi-stage2-control-preflight-v2",
+        "notice": DEVELOPMENT_ONLY_NOTICE,
+        "code_version": STAGE2_CODE_VERSION,
+        "git_provenance": dict(provenance),
+        "environment": _execution_environment(),
+        "plan": dict(plan),
+        "margin_normalization": asdict(normalization),
+        "margin_calibration_seeds": list(margin_seeds),
+        "risk_calibration_seeds": list(risk_seeds),
+        "risk_calibrations": [
+            {"p_jde_target": key[0], "pi_H": key[1], **asdict(calibrations[key])}
+            for key in sorted(calibrations)
+        ],
+        "gamma_NC": None if gamma_nc is None else dict(sorted(gamma_nc.items())),
+        "gamma_nc_status": "not_calibrated" if gamma_nc is None else "calibrated",
+        "gamma_nc_not_calibrated_reason": (
+            None
+            if failure_record is None
+            else failure_record["reason"]
+        ),
+        "failure": None if failure_record is None else dict(failure_record),
+        "workers": workers,
+        "evaluation_or_bootstrap_work_executed": False,
+    }
+
+
+def _stage2_preflight_report(
+    phase_runtimes: Mapping[str, Optional[float]],
+    work_unit_counts: Mapping[str, int],
+    gamma_nc: Optional[Mapping[str, float]],
+    failure_record: Optional[Mapping[str, object]] = None,
+) -> dict:
+    """Report completed work faithfully, including a non-imputed G failure."""
+
+    return {
+        "schema_version": "ppi-stage2-control-preflight-report-v2",
+        "phase_runtimes_seconds": dict(phase_runtimes),
+        "work_unit_counts": dict(work_unit_counts),
+        "gamma_NC": None if gamma_nc is None else dict(sorted(gamma_nc.items())),
+        "gamma_nc_status": "not_calibrated" if gamma_nc is None else "calibrated",
+        "gamma_nc_not_calibrated_reason": (
+            None
+            if failure_record is None
+            else failure_record["reason"]
+        ),
+        "failure": None if failure_record is None else dict(failure_record),
+        "evaluation_or_bootstrap_work_executed": False,
+    }
+
+
 def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
     """Run only the frozen Stage 2 calibration and mandatory control preflight.
 
@@ -1932,11 +2051,46 @@ def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
         config,
     )
     negative_results = execute_stage2_work_units(negative_units, workers)
-    gamma_nc = empirical_gamma_nc(
-        _stage2_control_g_values(
-            negative_results, STAGE2_PREFLIGHT_NEGATIVE_CONTROLS, config
+    try:
+        gamma_nc = empirical_gamma_nc(
+            _stage2_control_g_values(
+                negative_results, STAGE2_PREFLIGHT_NEGATIVE_CONTROLS, config
+            )
         )
-    )
+    except Stage2ControlBoundFailure as failure:
+        negative_seconds = time.perf_counter() - negative_started
+        phase_runtimes = {
+            "margin_calibration": margin_seconds,
+            "risk_calibration": risk_seconds,
+            "negative_control_calibration": negative_seconds,
+            "additional_control_preflight": None,
+            "total": time.perf_counter() - total_started,
+        }
+        work_unit_counts = {
+            "negative_control_calibration": len(negative_units),
+            "additional_control_preflight": 0,
+        }
+        manifest = _stage2_preflight_manifest(
+            config,
+            provenance,
+            plan,
+            normalization,
+            margin_seeds,
+            risk_seeds,
+            calibrations,
+            workers,
+            None,
+            failure.failure_record,
+        )
+        report = _stage2_preflight_report(
+            phase_runtimes, work_unit_counts, None, failure.failure_record
+        )
+        artifacts = _write_stage2_preflight_artifacts(
+            output_directory, manifest, negative_results, report
+        )
+        raise Stage2PreflightFailureReceipt(
+            failure.failure_record, artifacts
+        ) from failure
     negative_seconds = time.perf_counter() - negative_started
     additional_started = time.perf_counter()
     additional_units = build_stage2_control_work_units(
@@ -1956,41 +2110,31 @@ def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
         for result in all_results
     ):
         raise InvalidDevelopmentRun("Stage 2 mandatory structural control failed")
-    manifest = {
-        "schema_version": "ppi-stage2-control-preflight-v1",
-        "notice": DEVELOPMENT_ONLY_NOTICE,
-        "code_version": STAGE2_CODE_VERSION,
-        "git_provenance": provenance,
-        "environment": _execution_environment(),
-        "plan": plan,
-        "margin_normalization": asdict(normalization),
-        "margin_calibration_seeds": list(margin_seeds),
-        "risk_calibration_seeds": list(risk_seeds),
-        "risk_calibrations": [
-            {"p_jde_target": key[0], "pi_H": key[1], **asdict(calibrations[key])}
-            for key in sorted(calibrations)
-        ],
-        "gamma_NC": dict(sorted(gamma_nc.items())),
-        "workers": workers,
-        "evaluation_or_bootstrap_work_executed": False,
+    phase_runtimes = {
+        "margin_calibration": margin_seconds,
+        "risk_calibration": risk_seconds,
+        "negative_control_calibration": negative_seconds,
+        "additional_control_preflight": additional_seconds,
+        "total": time.perf_counter() - total_started,
     }
-    report = {
-        "schema_version": "ppi-stage2-control-preflight-report-v1",
-        "manifest_type": manifest["schema_version"],
-        "phase_runtimes_seconds": {
-            "margin_calibration": margin_seconds,
-            "risk_calibration": risk_seconds,
-            "negative_control_calibration": negative_seconds,
-            "additional_control_preflight": additional_seconds,
-            "total": time.perf_counter() - total_started,
-        },
-        "work_unit_counts": {
-            "negative_control_calibration": len(negative_units),
-            "additional_control_preflight": len(additional_units),
-        },
-        "gamma_NC": dict(sorted(gamma_nc.items())),
-        "evaluation_or_bootstrap_work_executed": False,
+    work_unit_counts = {
+        "negative_control_calibration": len(negative_units),
+        "additional_control_preflight": len(additional_units),
     }
+    manifest = _stage2_preflight_manifest(
+        config,
+        provenance,
+        plan,
+        normalization,
+        margin_seeds,
+        risk_seeds,
+        calibrations,
+        workers,
+        gamma_nc,
+    )
+    report = _stage2_preflight_report(
+        phase_runtimes, work_unit_counts, gamma_nc
+    )
     artifacts = _write_stage2_preflight_artifacts(
         output_directory, manifest, all_results, report
     )

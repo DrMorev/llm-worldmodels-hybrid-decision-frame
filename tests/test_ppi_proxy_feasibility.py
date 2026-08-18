@@ -49,7 +49,10 @@ from development.statistical_feasibility.proxies import (
 )
 from development.statistical_feasibility.run import (
     LeanAuditWorkUnit,
+    Stage2ControlBoundFailure,
+    Stage2PreflightFailureReceipt,
     _stage2_audit_seed_master,
+    _stage2_control_g_values,
     _lambda_grid_digest,
     aggregate_stage2_delta,
     build_stage2_control_work_units,
@@ -60,6 +63,7 @@ from development.statistical_feasibility.run import (
     replay_artifact,
     retain_stage1_trace,
     run_ppi_stage1,
+    run_stage2_preflight,
     main as run_main,
     simulate_named_audit,
     stage2_manifest,
@@ -1028,6 +1032,121 @@ class Stage2LeanExecutionTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(invalid_workers.exception.code, 2)
+
+    @staticmethod
+    def _undefined_control_result():
+        shared = {
+            "control_id": "permuted_ppi",
+            "replicate_id": 17,
+            "B": 500,
+            "validity_status": "empty_confidence_set",
+            "empty_confidence_set": True,
+            "monotonicity_status": "passed",
+            "support_status": "passed",
+            "warnings": ["empty_confidence_set"],
+        }
+        return {
+            "unit_id": "control-permuted_ppi-r0017",
+            "rows": [
+                {
+                    **shared,
+                    "conceptual_arm": "UP",
+                    "epsilon_samp": None,
+                    "final_upper_bound": .5,
+                },
+                {
+                    **shared,
+                    "conceptual_arm": "SP",
+                    "epsilon_samp": .1,
+                    "final_upper_bound": None,
+                },
+                {
+                    **shared,
+                    "conceptual_arm": "SP",
+                    "epsilon_samp": .2,
+                    "final_upper_bound": .4,
+                },
+                {
+                    **shared,
+                    "conceptual_arm": "SP",
+                    "epsilon_samp": .4,
+                    "final_upper_bound": .3,
+                },
+            ],
+        }
+
+    def test_73_undefined_control_bound_is_preserved_without_imputation(self):
+        with self.assertRaises(Stage2ControlBoundFailure) as raised:
+            _stage2_control_g_values(
+                [self._undefined_control_result()],
+                ("permuted_ppi",),
+                Stage2Config(),
+            )
+        record = raised.exception.failure_record
+        self.assertEqual(record["bound_role"], "SP numerator")
+        self.assertEqual(record["control_id"], "permuted_ppi")
+        self.assertEqual(record["replicate_id"], 17)
+        self.assertEqual(record["conceptual_arm"], "SP")
+        self.assertEqual(record["epsilon_samp"], .1)
+        self.assertTrue(record["empty_confidence_set"])
+        self.assertEqual(record["warnings"], ["empty_confidence_set"])
+        self.assertIn("no replicate was excluded or imputed", record["reason"])
+
+    def test_74_preflight_writes_completed_failure_evidence_before_nonzero_stop(self):
+        config = Stage2Config()
+        normalization = Stage2MarginCalibration(3.0, 3.0, .99, 100)
+        calibrations = {
+            (p_jde, pi_h): Stage2GeneratorParameters(p_jde, pi_h, 2.5, 0.0, "primary")
+            for p_jde in config.p_jde_targets
+            for pi_h in config.pi_h_values
+        }
+        failure_result = self._undefined_control_result()
+        artifacts = {"report_path": "/external/stage2_preflight_report.json"}
+        with mock.patch(
+            "development.statistical_feasibility.run._stage2_margin_calibration",
+            return_value=(normalization, (101, 102, 103)),
+        ), mock.patch(
+            "development.statistical_feasibility.run._stage2_risk_calibrations",
+            return_value=(calibrations, tuple(range(201, 211))),
+        ), mock.patch(
+            "development.statistical_feasibility.run.execute_stage2_work_units",
+            return_value=[failure_result],
+        ), mock.patch(
+            "development.statistical_feasibility.run._write_stage2_preflight_artifacts",
+            return_value=artifacts,
+        ) as writer, mock.patch(
+            "development.statistical_feasibility.run.inspect_git_provenance",
+            return_value={"head": "a" * 40, "branch": "test", "detached": False, "warning": None},
+        ):
+            with self.assertRaises(Stage2PreflightFailureReceipt) as raised:
+                run_stage2_preflight(Path("/external"), 1)
+        self.assertEqual(raised.exception.artifacts, artifacts)
+        self.assertEqual(raised.exception.failure_record["replicate_id"], 17)
+        _, manifest, completed_results, report = writer.call_args.args
+        self.assertEqual(completed_results, [failure_result])
+        self.assertIsNone(manifest["gamma_NC"])
+        self.assertEqual(manifest["gamma_nc_status"], "not_calibrated")
+        self.assertEqual(report["work_unit_counts"]["additional_control_preflight"], 0)
+        self.assertIsNone(report["phase_runtimes_seconds"]["additional_control_preflight"])
+        self.assertEqual(report["failure"]["conceptual_arm"], "SP")
+        with mock.patch(
+            "development.statistical_feasibility.run.run_stage2_preflight",
+            side_effect=Stage2PreflightFailureReceipt(
+                raised.exception.failure_record, artifacts
+            ),
+        ):
+            self.assertEqual(
+                run_main(
+                    [
+                        "--stage2-preflight",
+                        "--workers",
+                        "1",
+                        "--output-dir",
+                        "/external",
+                    ]
+                ),
+                2,
+            )
 
 
 if __name__ == "__main__":
