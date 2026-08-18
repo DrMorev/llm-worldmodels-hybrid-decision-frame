@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -31,8 +32,11 @@ from development.statistical_feasibility.betting import (
 from development.statistical_feasibility.core import (
     STAGE1_SCENARIOS,
     Stage1Config,
+    Stage2Config,
     stable_seed,
     stage1_arms,
+    stage2_cells,
+    stage2_trajectory_arms,
 )
 from development.statistical_feasibility.proxies import (
     InvalidObservableMagnitude,
@@ -44,17 +48,31 @@ from development.statistical_feasibility.proxies import (
     ppi_from_observable_outputs,
 )
 from development.statistical_feasibility.run import (
+    LeanAuditWorkUnit,
     _lambda_grid_digest,
+    aggregate_stage2_delta,
+    build_stage2_primary_work_units,
+    classify_stage2_development,
+    empirical_gamma_nc,
+    execute_lean_audit_work_units,
     replay_artifact,
     retain_stage1_trace,
     run_ppi_stage1,
     simulate_named_audit,
+    stage2_manifest,
+    stage2_replay_replicate,
+    summarize_stage2_cells,
 )
 from development.statistical_feasibility.sampling import policy_probabilities
 from development.statistical_feasibility.scenarios import (
     STAGE1_ACCEPTANCE_CHECK_SEEDS,
     STAGE1_SCENARIO_SPECS,
+    Stage2GeneratorParameters,
+    Stage2MarginCalibration,
+    calibrate_stage2_margin_normalization,
+    calibrate_stage2_risk_parameters,
     generate_stage1_population,
+    stage2_control_parameters,
     validate_stage1_acceptance,
 )
 
@@ -613,6 +631,310 @@ class MixturePerformanceEquivalenceTests(unittest.TestCase):
             return results
 
         self.assertEqual(execute(work_units), execute(reversed(work_units)))
+
+
+class Stage2LeanExecutionTests(unittest.TestCase):
+    @staticmethod
+    def _population(size=80, budget=30, seed=70001):
+        config = Stage1Config(
+            population_size=size,
+            budget=budget,
+            replicates=1,
+            scenario_ids=("mixed_fragile_and_stable_failure",),
+        )
+        population = generate_stage1_population(
+            "mixed_fragile_and_stable_failure", size, seed, config
+        ).population
+        return config, population
+
+    def assert_audits_equivalent(self, replay, lean, tolerance=1e-12):
+        self.assertEqual(replay["selection_order"], lean["selection_order"])
+        self.assertEqual(replay["errors_observed"], lean["errors_observed"])
+        self.assertEqual(replay["warnings"], lean["warnings"])
+        self.assertTrue(replay["forensic_replay_performed"])
+        self.assertFalse(lean["forensic_replay_performed"])
+        self.assertTrue(replay["q_replay_passed"])
+        self.assertIsNone(lean["q_replay_passed"])
+        scalar_fields = (
+            "draw_uniform",
+            "selected_item_id",
+            "selected_q",
+            "minimum_q_at_step",
+            "revealed_outcome",
+            "expected_control_variate_under_q",
+            "u",
+            "beta",
+            "importance_weight",
+            "constant_term",
+            "logical_complement_lower",
+            "support_term_count",
+        )
+        for replay_row, lean_row in zip(replay["trace"], lean["trace"]):
+            self.assertIsNotNone(replay_row["pre_reveal"])
+            self.assertIsNone(lean_row["pre_reveal"])
+            for field in scalar_fields:
+                left, right = replay_row[field], lean_row[field]
+                if isinstance(left, float):
+                    self.assertLessEqual(abs(left - right), tolerance, field)
+                else:
+                    self.assertEqual(left, right, field)
+        for replay_step, lean_step in zip(
+            replay["wealth_steps"], lean["wealth_steps"]
+        ):
+            self.assertLessEqual(
+                abs(replay_step.constant_term - lean_step.constant_term), tolerance
+            )
+            self.assertLessEqual(
+                abs(
+                    replay_step.support_minimum.constant_term
+                    - lean_step.support_minimum.constant_term
+                ),
+                tolerance,
+            )
+            self.assertEqual(
+                replay_step.support_term_count, lean_step.support_term_count
+            )
+        replay_bound = evaluate_running_mixture_bound(
+            replay["wealth_steps"], (.05, .10, .25, .50), .05, 1e-10, 1e-10
+        )
+        lean_bound = evaluate_running_mixture_bound(
+            lean["wealth_steps"], (.05, .10, .25, .50), .05, 1e-10, 1e-10
+        )
+        self.assertLessEqual(
+            abs(replay_bound.upper_error_bound - lean_bound.upper_error_bound),
+            1e-10,
+        )
+        self.assertEqual(
+            replay_bound.monotonicity_status, lean_bound.monotonicity_status
+        )
+
+    def test_60_all_five_arms_match_replay_grade_path(self):
+        config, population = self._population()
+        for arm in stage1_arms(8, .2):
+            with self.subTest(arm=arm.arm_id):
+                seed = stable_seed(70002, arm.arm_id)
+                replay = simulate_named_audit(
+                    population, arm, 30, config.ridge, seed, "replay_grade"
+                )
+                lean = simulate_named_audit(
+                    population, arm, 30, config.ridge, seed, "lean"
+                )
+                self.assert_audits_equivalent(replay, lean)
+
+    def test_61_medium_sp_path_matches_replay_grade(self):
+        config, population = self._population(500, 200, 71001)
+        arm = stage1_arms(8, .2)[-1]
+        replay = simulate_named_audit(
+            population, arm, 200, config.ridge, 71002, "replay_grade"
+        )
+        lean = simulate_named_audit(
+            population, arm, 200, config.ridge, 71002, "lean"
+        )
+        self.assert_audits_equivalent(replay, lean)
+
+    def test_62_worker_count_and_completion_order_are_deterministic(self):
+        config, population = self._population(60, 20, 72001)
+        units = tuple(
+            LeanAuditWorkUnit(
+                arm.arm_id,
+                population,
+                arm,
+                20,
+                config.ridge,
+                stable_seed(72002, arm.arm_id),
+            )
+            for arm in reversed(stage1_arms(8, .2))
+        )
+        serial = execute_lean_audit_work_units(units, 1)
+        parallel = execute_lean_audit_work_units(units, min(4, os.cpu_count() or 1))
+        self.assertEqual(serial, parallel)
+
+    def test_63_stage2_design_grid_and_nested_trajectories_are_exact(self):
+        config = Stage2Config()
+        config.validate()
+        cells = stage2_cells(config)
+        self.assertEqual(len(cells), 144)
+        self.assertEqual({cell.budget for cell in cells}, {50, 100, 200, 500})
+        self.assertEqual({cell.pi_h for cell in cells}, {0.0, 0.5, 0.75})
+        arms = stage2_trajectory_arms(config)
+        self.assertEqual(len(arms), 9)
+        self.assertEqual([arm.conceptual_arm for arm in arms[:3]], ["U0", "UM", "UP"])
+        self.assertEqual(
+            {arm.epsilon_samp for arm in arms if arm.conceptual_arm in {"SM", "SP"}},
+            {0.1, 0.2, 0.4},
+        )
+        with self.assertRaises(ValueError):
+            Stage2Config(manifest_type="confirmatory").validate()
+        with self.assertRaises(ValueError):
+            Stage2Config(replicates=199).validate()
+        with self.assertRaises(ValueError):
+            Stage2Config(pi_h_values=(0.0, 0.5, 1.0)).validate()
+
+    def test_64_seed_namespaces_and_replay_selection_are_frozen(self):
+        config = Stage2Config()
+        seeds = {
+            config.calibration_master_seed,
+            config.negative_control_master_seed,
+            config.evaluation_master_seed,
+            config.bootstrap_master_seed,
+        }
+        self.assertEqual(len(seeds), 4)
+        replicate = stage2_replay_replicate(config)
+        self.assertGreaterEqual(replicate, 0)
+        self.assertLess(replicate, config.replicates)
+        normalization = Stage2MarginCalibration(3.1, 3.2, .99, 100)
+        calibrations = {
+            (p_jde, pi_h): Stage2GeneratorParameters(
+                p_jde, pi_h, 2.8, 0.01, "primary"
+            )
+            for p_jde in config.p_jde_targets
+            for pi_h in config.pi_h_values
+        }
+        units = build_stage2_primary_work_units(
+            calibrations, normalization, config
+        )
+        self.assertEqual(len(units), 2400)
+        selected = [unit for unit in units if unit.capture_replay_evidence]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].replicate_id, replicate)
+        self.assertEqual(selected[0].parameters.pi_h, 0.75)
+        manifest = stage2_manifest(
+            config,
+            normalization,
+            calibrations,
+            {"pi_h_zero": .01, "permuted_ppi": .01, "constant_ppi": .01},
+            4,
+        )
+        self.assertTrue(manifest["development_only"])
+        self.assertFalse(manifest["confirmatory_manifest"])
+        self.assertTrue(manifest["seed_namespaces"]["disjoint"])
+        self.assertEqual(manifest["replay_selection_rule"]["pi_H"], 0.75)
+
+    def test_65_margin_calibration_uses_observable_magnitudes(self):
+        outputs = tuple(
+            ObservableCaseOutputs(
+                f"item-{index}", 1, 1, 0.5 + index / 100, 0.6 + index / 100,
+                (1,) * 8, (1,) * 8,
+            )
+            for index in range(100)
+        )
+        result = calibrate_stage2_margin_normalization(outputs)
+        self.assertEqual(result.percentile, .99)
+        self.assertEqual(result.observation_count, 100)
+        self.assertGreater(result.normalization_primary, .25)
+        self.assertGreater(result.normalization_verifier, .25)
+
+    def test_66_risk_calibration_boundary_receives_only_parameters_and_seed(self):
+        config = Stage2Config()
+        normalization = Stage2MarginCalibration(3.0, 3.0, .99, 10)
+
+        def prevalence_only(parameters, seed, supplied_normalization, supplied_config):
+            self.assertIsInstance(parameters, Stage2GeneratorParameters)
+            self.assertIsInstance(seed, int)
+            self.assertIs(supplied_normalization, normalization)
+            self.assertIs(supplied_config, config)
+            return max(0.0, (3.0 - parameters.robust_coefficient) * .1)
+
+        with mock.patch(
+            "development.statistical_feasibility.scenarios.stage2_prevalence_probe",
+            side_effect=prevalence_only,
+        ):
+            result = calibrate_stage2_risk_parameters(
+                .03, .5, (73001, 73002), normalization, config
+            )
+        self.assertEqual(result.inspected_quantity, "aggregate_true_jde_prevalence_only")
+        self.assertEqual(result.calibration_seeds, (73001, 73002))
+
+    def test_67_mandatory_controls_use_only_existing_mechanisms(self):
+        base = Stage2GeneratorParameters(.03, .5, 2.8, .01, "primary")
+        controls = {
+            control_id: stage2_control_parameters(base, control_id)
+            for control_id in (
+                "pi_h_zero",
+                "fragility_unrelated_to_error",
+                "stable_shared_false_belief",
+                "permuted_ppi",
+                "constant_ppi",
+                "favourable_high_fragility",
+            )
+        }
+        self.assertEqual(controls["pi_h_zero"].pi_h, 0.0)
+        self.assertEqual(controls["favourable_high_fragility"].pi_h, 0.75)
+        self.assertEqual(controls["constant_ppi"].control_id, "constant_ppi")
+        self.assertEqual(controls["permuted_ppi"].control_id, "permuted_ppi")
+
+    @staticmethod
+    def _synthetic_stage2_records(eligible=True):
+        config = Stage2Config()
+        rows = []
+        for p_jde in config.p_jde_targets:
+            for budget in config.budgets:
+                for pi_h in config.pi_h_values:
+                    for replicate in range(config.replicates):
+                        shared = {
+                            "p_jde_target": p_jde,
+                            "pi_H": pi_h,
+                            "B": budget,
+                            "replicate_id": replicate,
+                            "control_id": "primary",
+                            "coverage_indicator": eligible,
+                            "zero_event": False,
+                            "validity_status": "valid",
+                            "empty_confidence_set": False,
+                        }
+                        rows.append({
+                            **shared,
+                            "conceptual_arm": "UP",
+                            "epsilon_samp": None,
+                            "final_upper_bound": .5 if eligible else 1.0,
+                        })
+                        for epsilon in config.epsilon_values:
+                            rows.append({
+                                **shared,
+                                "conceptual_arm": "SP",
+                                "epsilon_samp": epsilon,
+                                "final_upper_bound": .4 if eligible else 1.0,
+                            })
+        return rows
+
+    def test_68_eligibility_precedes_delta_and_preserves_every_cell(self):
+        eligible = summarize_stage2_cells(self._synthetic_stage2_records(True))
+        self.assertEqual(len(eligible), 144)
+        self.assertTrue(all(row["eligible"] for row in eligible))
+        self.assertTrue(all(abs(row["Delta_cell"] - .2) < 1e-12 for row in eligible))
+        self.assertAlmostEqual(aggregate_stage2_delta(eligible), .2)
+        ineligible = summarize_stage2_cells(self._synthetic_stage2_records(False))
+        self.assertEqual(len(ineligible), 144)
+        self.assertTrue(all(not row["eligible"] for row in ineligible))
+        self.assertTrue(all(row["Delta_cell"] is None for row in ineligible))
+        self.assertTrue(all(row["exclusion_reasons"] for row in ineligible))
+
+    def test_69_negative_control_and_symmetric_classification(self):
+        gamma = empirical_gamma_nc({
+            "pi_h_zero": tuple(range(100)),
+            "permuted_ppi": tuple(range(100)),
+            "constant_ppi": tuple(range(100)),
+        })
+        self.assertEqual(gamma, {
+            "pi_h_zero": 97.0,
+            "permuted_ppi": 97.0,
+            "constant_ppi": 97.0,
+        })
+        cells = [{"eligible": False, "Delta_cell": None}]
+        passed = {key: True for key in gamma}
+        self.assertEqual(
+            classify_stage2_development(cells, passed),
+            "INCONCLUSIVE_NO_ELIGIBLE_REGION",
+        )
+        self.assertEqual(
+            classify_stage2_development([{"eligible": True, "Delta_cell": -.1}], passed),
+            "FEASIBLE_REGION_PRESENT",
+        )
+        failed = dict(passed)
+        failed["constant_ppi"] = False
+        self.assertEqual(
+            classify_stage2_development(cells, failed), "INVALID_DEVELOPMENT"
+        )
 
 
 if __name__ == "__main__":

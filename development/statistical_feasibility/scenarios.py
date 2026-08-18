@@ -13,6 +13,7 @@ from .core import (
     ObservableScoreItem,
     PopulationItem,
     Stage1Config,
+    Stage2Config,
     stable_seed,
 )
 from .proxies import (
@@ -179,6 +180,7 @@ def _component_logit(
     h_i: int,
     stable_false_belief: int,
     component_error: float,
+    robust_coefficient: float = ROBUST_COEFFICIENT,
 ) -> float:
     truth_sign = 1.0 if representation.truth == 1 else -1.0
     fragile_value = math.fsum(
@@ -186,7 +188,7 @@ def _component_logit(
         for weight, value in zip(FRAGILE_WEIGHTS, representation.fragile_surface)
     )
     return (
-        ROBUST_COEFFICIENT * representation.robust_feature
+        robust_coefficient * representation.robust_feature
         + h_i * FRAGILE_COEFFICIENT * fragile_value
         - stable_false_belief * STABLE_FALSE_BELIEF_COEFFICIENT * truth_sign
         + component_error
@@ -258,16 +260,19 @@ def permute_ppi_within_observable_strata(
     return tuple(result)
 
 
-def stage1_engineering_constants() -> Mapping[str, object]:
+def stage1_engineering_constants(
+    robust_coefficient: float = ROBUST_COEFFICIENT,
+    classification: str = "engineering-only; not Stage 2 or confirmatory values",
+) -> Mapping[str, object]:
     return {
-        "robust_coefficient": ROBUST_COEFFICIENT,
+        "robust_coefficient": robust_coefficient,
         "fragile_coefficient_primary": FRAGILE_COEFFICIENT,
         "fragile_coefficient_verifier": FRAGILE_COEFFICIENT,
         "stable_false_belief_coefficient": STABLE_FALSE_BELIEF_COEFFICIENT,
         "component_error_half_range": COMPONENT_ERROR_HALF_RANGE,
         "fragile_base_magnitude": FRAGILE_BASE_MAGNITUDE,
         "fragile_weights": list(FRAGILE_WEIGHTS),
-        "classification": "engineering-only; not Stage 2 or confirmatory values",
+        "classification": classification,
     }
 
 
@@ -277,15 +282,21 @@ def generate_stage1_population(
     seed: int,
     config: Stage1Config,
     bank: FrozenTransformationBank | None = None,
+    scenario_spec: Stage1ScenarioSpec | None = None,
+    robust_coefficient: float = ROBUST_COEFFICIENT,
+    constant_ppi: bool = False,
+    manifest_classification: str = "Stage 1 engineering-only",
 ) -> GeneratedStage1Population:
     """Generate structural outputs first, then derive PPI and hidden error labels."""
 
     config.validate()
-    if scenario_id not in STAGE1_SCENARIO_SPECS:
+    if scenario_spec is None and scenario_id not in STAGE1_SCENARIO_SPECS:
         raise ValueError(f"unknown Stage 1 scenario: {scenario_id}")
     if population_size <= 0:
         raise ValueError("Stage 1 population size must be positive")
-    spec = STAGE1_SCENARIO_SPECS[scenario_id]
+    spec = scenario_spec or STAGE1_SCENARIO_SPECS[scenario_id]
+    if not math.isfinite(robust_coefficient) or robust_coefficient <= 0.0:
+        raise ValueError("robust coefficient must be finite and positive")
     bank = bank or frozen_transformation_bank()
     rng = random.Random(stable_seed(seed, scenario_id, "causal-generator"))
     selected_cases: List[Stage1CausalCase] = []
@@ -323,10 +334,10 @@ def generate_stage1_population(
             fragile_surface=fragile_surface,
         )
         primary_logit = _component_logit(
-            representation, h_i, stable_false, primary_error
+            representation, h_i, stable_false, primary_error, robust_coefficient
         )
         verifier_logit = _component_logit(
-            representation, h_i, stable_false, verifier_error
+            representation, h_i, stable_false, verifier_error, robust_coefficient
         )
         primary_output = _binary_output(primary_logit)
         verifier_output = _binary_output(verifier_logit)
@@ -343,12 +354,24 @@ def generate_stage1_population(
             )
             transformed_primary.append(
                 _binary_output(
-                    _component_logit(transformed, h_i, stable_false, primary_error)
+                    _component_logit(
+                        transformed,
+                        h_i,
+                        stable_false,
+                        primary_error,
+                        robust_coefficient,
+                    )
                 )
             )
             transformed_verifier.append(
                 _binary_output(
-                    _component_logit(transformed, h_i, stable_false, verifier_error)
+                    _component_logit(
+                        transformed,
+                        h_i,
+                        stable_false,
+                        verifier_error,
+                        robust_coefficient,
+                    )
                 )
             )
         if len(set(item.fragile_surface for item in transformed_representations)) != 8:
@@ -413,6 +436,18 @@ def generate_stage1_population(
         selected_items = list(
             permute_ppi_within_observable_strata(selected_items, selected_outputs)
         )
+    if constant_ppi:
+        selected_items = [
+            ObservableScoreItem(
+                item.item_id,
+                (
+                    ("ppi_k8", 0.0),
+                    ("ppi_k4", 0.0),
+                    ("confidence_margin", item.scores()["confidence_margin"]),
+                ),
+            )
+            for item in selected_items
+        ]
     population = NamedFinitePopulation(
         scenario_id=scenario_id,
         items=tuple(selected_items),
@@ -444,7 +479,7 @@ def generate_stage1_population(
             "tau_verifier": config.tau_verifier,
             "normalization_primary": config.normalization_primary,
             "normalization_verifier": config.normalization_verifier,
-            "classification": "Stage 1 engineering-only",
+            "classification": manifest_classification,
         },
         "agreement_selection": {
             "tau_stage1": config.tau_primary,
@@ -455,7 +490,13 @@ def generate_stage1_population(
             "engineering_only": True,
             "selection_neutral_null": scenario_id == "no_shared_fragile_mechanism",
         },
-        "constants": stage1_engineering_constants(),
+        "constants": stage1_engineering_constants(
+            robust_coefficient,
+            "Stage 2 development-only calibrated value"
+            if manifest_classification.startswith("Stage 2")
+            else "engineering-only; not Stage 2 or confirmatory values",
+        ),
+        "constant_ppi": constant_ppi,
     }
     return GeneratedStage1Population(
         population=population,
@@ -498,3 +539,279 @@ def validate_stage1_acceptance(
                 )
             )
     return tuple(checks)
+
+
+@dataclass(frozen=True)
+class Stage2GeneratorParameters:
+    """Frozen existing-mechanism parameters for one Stage 2 risk/pi_H cell."""
+
+    p_jde_target: float
+    pi_h: float
+    robust_coefficient: float
+    stable_false_belief_rate: float
+    control_id: str = "primary"
+
+    def validate(self) -> None:
+        if self.p_jde_target not in (1e-1, 3e-2, 1e-2, 3e-3):
+            raise ValueError("unknown Stage 2 p_JDE target")
+        if self.pi_h not in (0.0, 0.5, 0.75):
+            raise ValueError("unknown Stage 2 pi_H value")
+        if not math.isfinite(self.robust_coefficient) or self.robust_coefficient <= 0:
+            raise ValueError("Stage 2 robust coefficient must be finite and positive")
+        if not 0.0 <= self.stable_false_belief_rate <= 1.0:
+            raise ValueError("Stage 2 stable-false-belief rate is invalid")
+        if self.control_id not in {
+            "primary",
+            "pi_h_zero",
+            "fragility_unrelated_to_error",
+            "stable_shared_false_belief",
+            "permuted_ppi",
+            "constant_ppi",
+            "favourable_high_fragility",
+        }:
+            raise ValueError("unknown Stage 2 control identity")
+
+
+@dataclass(frozen=True)
+class Stage2MarginCalibration:
+    normalization_primary: float
+    normalization_verifier: float
+    percentile: float
+    observation_count: int
+
+
+@dataclass(frozen=True)
+class Stage2RiskCalibration:
+    parameters: Stage2GeneratorParameters
+    realized_calibration_prevalence: float
+    calibration_seeds: Tuple[int, ...]
+    inspected_quantity: str = "aggregate_true_jde_prevalence_only"
+
+
+def _empirical_percentile(values: Sequence[float], probability: float) -> float:
+    if not values or not 0.0 <= probability <= 1.0:
+        raise ValueError("empirical percentile inputs are invalid")
+    ordered = sorted(float(value) for value in values)
+    if any(not math.isfinite(value) for value in ordered):
+        raise ValueError("empirical percentile values must be finite")
+    position = probability * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return math.fsum(
+        ((1.0 - weight) * ordered[lower], weight * ordered[upper])
+    )
+
+
+def calibrate_stage2_margin_normalization(
+    observable_outputs: Sequence[ObservableCaseOutputs],
+    tau_primary: float = 0.25,
+    tau_verifier: float = 0.25,
+) -> Stage2MarginCalibration:
+    """Use only observable original magnitudes from reserved development data."""
+
+    if not observable_outputs:
+        raise ValueError("Stage 2 margin calibration requires observable outputs")
+    primary = [row.original_primary_magnitude for row in observable_outputs]
+    verifier = [row.original_verifier_magnitude for row in observable_outputs]
+    normalization_primary = _empirical_percentile(primary, 0.99)
+    normalization_verifier = _empirical_percentile(verifier, 0.99)
+    if normalization_primary <= tau_primary or normalization_verifier <= tau_verifier:
+        raise ValueError("Stage 2 calibrated normalization must exceed tau")
+    return Stage2MarginCalibration(
+        normalization_primary,
+        normalization_verifier,
+        0.99,
+        len(observable_outputs),
+    )
+
+
+def _stage2_scenario_spec(parameters: Stage2GeneratorParameters) -> Stage1ScenarioSpec:
+    parameters.validate()
+    control_id = parameters.control_id
+    pi_h = parameters.pi_h
+    stable_rate = parameters.stable_false_belief_rate
+    unrelated = control_id == "fragility_unrelated_to_error"
+    permuted = control_id == "permuted_ppi"
+    if control_id in {"pi_h_zero", "stable_shared_false_belief"}:
+        pi_h = 0.0
+    if control_id == "favourable_high_fragility":
+        pi_h = 0.75
+    return Stage1ScenarioSpec(
+        scenario_id=f"stage2-{control_id}",
+        pi_h=pi_h,
+        stable_false_belief_rate=stable_rate,
+        unrelated_fragility=unrelated,
+        permute_ppi=permuted,
+    )
+
+
+def generate_stage2_population(
+    parameters: Stage2GeneratorParameters,
+    seed: int,
+    normalization: Stage2MarginCalibration,
+    config: Stage2Config | None = None,
+    bank: FrozenTransformationBank | None = None,
+) -> GeneratedStage1Population:
+    """Reuse the accepted causal mechanism with frozen Stage 2 cell parameters."""
+
+    config = config or Stage2Config()
+    config.validate()
+    parameters.validate()
+    scenario_id = (
+        f"stage2-{parameters.control_id}-p{parameters.p_jde_target:.12g}-"
+        f"h{parameters.pi_h:.12g}"
+    )
+    generator_config = Stage1Config(
+        population_size=config.population_size,
+        budget=0,
+        replicates=1,
+        ks=(8,),
+        epsilon_samp=0.2,
+        lambda_grid=config.lambda_grid,
+        alpha_cs=config.alpha_cs,
+        ridge=config.ridge,
+        tau_primary=config.tau_primary,
+        tau_verifier=config.tau_verifier,
+        normalization_primary=normalization.normalization_primary,
+        normalization_verifier=normalization.normalization_verifier,
+        master_seed=config.evaluation_master_seed,
+        inversion_tolerance=config.inversion_tolerance,
+        monotonicity_tolerance=config.monotonicity_tolerance,
+        maximum_generated_candidates=config.maximum_generated_candidates,
+    )
+    generated = generate_stage1_population(
+        scenario_id,
+        config.population_size,
+        seed,
+        generator_config,
+        bank,
+        scenario_spec=_stage2_scenario_spec(parameters),
+        robust_coefficient=parameters.robust_coefficient,
+        constant_ppi=parameters.control_id == "constant_ppi",
+        manifest_classification="Stage 2 development-only; never confirmatory",
+    )
+    return generated
+
+
+def stage2_prevalence_probe(
+    parameters: Stage2GeneratorParameters,
+    seed: int,
+    normalization: Stage2MarginCalibration,
+    config: Stage2Config,
+) -> float:
+    """Risk calibrator boundary: expose only aggregate evaluator prevalence."""
+
+    return generate_stage2_population(
+        parameters, seed, normalization, config
+    ).population.true_prevalence
+
+
+def calibrate_stage2_risk_parameters(
+    p_jde_target: float,
+    pi_h: float,
+    calibration_seeds: Sequence[int],
+    normalization: Stage2MarginCalibration,
+    config: Stage2Config | None = None,
+) -> Stage2RiskCalibration:
+    """Tune only existing difficulty parameters using aggregate prevalence.
+
+    For the pi_H=0 null, the existing stable-shared-belief mixture is varied.
+    For pi_H>0, its rate is fixed at zero and the existing common robust
+    coefficient is varied.  No score, arm, bound, or contrast enters selection.
+    """
+
+    config = config or Stage2Config()
+    config.validate()
+    seeds = tuple(int(seed) for seed in calibration_seeds)
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValueError("risk calibration seeds must be non-empty and unique")
+
+    def evaluate(robust: float, stable_rate: float) -> float:
+        parameters = Stage2GeneratorParameters(
+            p_jde_target, pi_h, robust, stable_rate, "primary"
+        )
+        return math.fsum(
+            stage2_prevalence_probe(parameters, seed, normalization, config)
+            for seed in seeds
+        ) / len(seeds)
+
+    best = None
+    if pi_h == 0.0:
+        low, high = 0.0, min(0.5, max(0.20, 4.0 * p_jde_target))
+        robust = ROBUST_COEFFICIENT
+        for _ in range(18):
+            midpoint = (low + high) / 2.0
+            realized = evaluate(robust, midpoint)
+            candidate = (abs(realized - p_jde_target), midpoint, realized)
+            best = candidate if best is None or candidate < best else best
+            if realized < p_jde_target:
+                low = midpoint
+            else:
+                high = midpoint
+        _, stable_rate, realized = best
+    else:
+        low, high = 2.40, 3.20
+        stable_rate = 0.0
+        for _ in range(18):
+            midpoint = (low + high) / 2.0
+            realized = evaluate(midpoint, stable_rate)
+            candidate = (abs(realized - p_jde_target), midpoint, realized)
+            best = candidate if best is None or candidate < best else best
+            if realized > p_jde_target:
+                low = midpoint
+            else:
+                high = midpoint
+        _, robust, realized = best
+    parameters = Stage2GeneratorParameters(
+        p_jde_target, pi_h, robust, stable_rate, "primary"
+    )
+    return Stage2RiskCalibration(parameters, realized, seeds)
+
+
+def stage2_control_parameters(
+    base: Stage2GeneratorParameters,
+    control_id: str,
+) -> Stage2GeneratorParameters:
+    """Apply one accepted control identity without adding a mechanism."""
+
+    base.validate()
+    if control_id == "pi_h_zero":
+        return Stage2GeneratorParameters(
+            base.p_jde_target,
+            0.0,
+            base.robust_coefficient,
+            base.stable_false_belief_rate,
+            control_id,
+        )
+    if control_id == "stable_shared_false_belief":
+        return Stage2GeneratorParameters(
+            base.p_jde_target,
+            0.0,
+            base.robust_coefficient,
+            max(base.stable_false_belief_rate, base.p_jde_target),
+            control_id,
+        )
+    if control_id == "favourable_high_fragility":
+        return Stage2GeneratorParameters(
+            base.p_jde_target,
+            0.75,
+            base.robust_coefficient,
+            base.stable_false_belief_rate,
+            control_id,
+        )
+    if control_id in {
+        "fragility_unrelated_to_error",
+        "permuted_ppi",
+        "constant_ppi",
+    }:
+        return Stage2GeneratorParameters(
+            base.p_jde_target,
+            base.pi_h,
+            base.robust_coefficient,
+            base.stable_false_belief_rate,
+            control_id,
+        )
+    raise ValueError("unknown mandatory Stage 2 control")

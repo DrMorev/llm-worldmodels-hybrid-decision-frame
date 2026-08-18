@@ -368,3 +368,127 @@ def stage1_arms(k: int, epsilon_samp: float) -> Tuple[Stage1ArmSpec, ...]:
     for arm in arms:
         arm.validate()
     return arms
+
+
+STAGE2_P_JDE_TARGETS: Tuple[float, ...] = (1e-1, 3e-2, 1e-2, 3e-3)
+STAGE2_BUDGETS: Tuple[int, ...] = (50, 100, 200, 500)
+STAGE2_PI_H_VALUES: Tuple[float, ...] = (0.0, 0.5, 0.75)
+STAGE2_EPSILON_VALUES: Tuple[float, ...] = (0.1, 0.2, 0.4)
+STAGE2_LAMBDA_GRID: Tuple[float, ...] = (0.05, 0.10, 0.25, 0.50)
+STAGE2_CONTROL_IDS: Tuple[str, ...] = (
+    "pi_h_zero",
+    "fragility_unrelated_to_error",
+    "stable_shared_false_belief",
+    "permuted_ppi",
+    "constant_ppi",
+    "favourable_high_fragility",
+)
+
+
+@dataclass(frozen=True)
+class Stage2Cell:
+    """One fixed primary-map cell; budgets are evaluated as nested prefixes."""
+
+    p_jde_target: float
+    budget: int
+    pi_h: float
+    epsilon_samp: float
+
+    @property
+    def cell_id(self) -> str:
+        return (
+            f"p{self.p_jde_target:.12g}-b{self.budget}-"
+            f"h{self.pi_h:.12g}-e{self.epsilon_samp:.12g}"
+        )
+
+
+@dataclass(frozen=True)
+class Stage2Config:
+    """Frozen development-only minimum Stage 2 design, never confirmatory."""
+
+    population_size: int = 5000
+    replicates: int = 200
+    p_jde_targets: Tuple[float, ...] = STAGE2_P_JDE_TARGETS
+    budgets: Tuple[int, ...] = STAGE2_BUDGETS
+    pi_h_values: Tuple[float, ...] = STAGE2_PI_H_VALUES
+    epsilon_values: Tuple[float, ...] = STAGE2_EPSILON_VALUES
+    lambda_grid: Tuple[float, ...] = STAGE2_LAMBDA_GRID
+    alpha_cs: float = 0.05
+    ridge: float = 1e-6
+    tau_primary: float = 0.25
+    tau_verifier: float = 0.25
+    margin_percentile: float = 0.99
+    maximum_generated_candidates: int = 25000
+    inversion_tolerance: float = 1e-10
+    monotonicity_tolerance: float = 1e-10
+    calibration_master_seed: int = 2026081801
+    negative_control_master_seed: int = 2026081802
+    evaluation_master_seed: int = 2026081803
+    bootstrap_master_seed: int = 2026081804
+    manifest_type: str = "development_only_ppi_stage2"
+    schema_version: str = "ppi-stage2-lean-v2"
+
+    def validate(self) -> None:
+        if self.manifest_type != "development_only_ppi_stage2":
+            raise ValueError("confirmatory or unknown Stage 2 manifests are forbidden")
+        if self.population_size < 5000 or self.replicates < 200:
+            raise ValueError("Stage 2 minimum N_A and replicate count may not be reduced")
+        if self.p_jde_targets != STAGE2_P_JDE_TARGETS:
+            raise ValueError("Stage 2 risk grid is frozen for this development task")
+        if self.budgets != STAGE2_BUDGETS:
+            raise ValueError("Stage 2 nested budget grid is frozen")
+        if self.pi_h_values != STAGE2_PI_H_VALUES:
+            raise ValueError("Stage 2 pi_H grid is frozen")
+        if self.epsilon_values != STAGE2_EPSILON_VALUES:
+            raise ValueError("Stage 2 exploration grid is frozen")
+        if self.lambda_grid != STAGE2_LAMBDA_GRID:
+            raise ValueError("Stage 2 common lambda grid is frozen")
+        if self.tau_primary != 0.25 or self.tau_verifier != 0.25:
+            raise ValueError("Stage 2 development agreement threshold is fixed at 0.25")
+        if not 0.0 < self.alpha_cs < 1.0:
+            raise ValueError("Stage 2 alpha_CS must lie in (0, 1)")
+        if self.ridge <= 0.0 or not math.isfinite(self.ridge):
+            raise ValueError("Stage 2 ridge must be finite and positive")
+        if self.margin_percentile != 0.99:
+            raise ValueError("Stage 2 margin normalization uses the 99th percentile")
+        if self.maximum_generated_candidates < self.population_size:
+            raise ValueError("Stage 2 candidate ceiling cannot be below N_A")
+        seeds = (
+            self.calibration_master_seed,
+            self.negative_control_master_seed,
+            self.evaluation_master_seed,
+            self.bootstrap_master_seed,
+        )
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("Stage 2 seed namespaces must be disjoint")
+        for tolerance in (self.inversion_tolerance, self.monotonicity_tolerance):
+            if tolerance <= 0.0 or not math.isfinite(tolerance):
+                raise ValueError("Stage 2 tolerances must be finite and positive")
+
+
+def stage2_cells(config: Stage2Config | None = None) -> Tuple[Stage2Cell, ...]:
+    config = config or Stage2Config()
+    config.validate()
+    return tuple(
+        Stage2Cell(p_jde, budget, pi_h, epsilon)
+        for p_jde in config.p_jde_targets
+        for budget in config.budgets
+        for pi_h in config.pi_h_values
+        for epsilon in config.epsilon_values
+    )
+
+
+def stage2_trajectory_arms(
+    config: Stage2Config | None = None,
+) -> Tuple[Stage1ArmSpec, ...]:
+    """Nine max-B trajectories per population: three uniform plus six directed."""
+
+    config = config or Stage2Config()
+    config.validate()
+    first = stage1_arms(8, config.epsilon_values[0])
+    result = list(first[:3])
+    for epsilon in config.epsilon_values:
+        result.extend(stage1_arms(8, epsilon)[3:])
+    if len(result) != 9 or len({arm.arm_id for arm in result}) != 9:
+        raise AssertionError("Stage 2 trajectory arm roster must contain nine unique IDs")
+    return tuple(result)

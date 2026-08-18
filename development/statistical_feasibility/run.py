@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import csv
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import platform
 import random
@@ -16,7 +18,7 @@ import statistics
 import sys
 import tempfile
 import time
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .betting import (
     ControlledNumericalFailure,
@@ -37,10 +39,14 @@ from .core import (
     SmokeConfig,
     Stage1ArmSpec,
     Stage1Config,
+    Stage2Cell,
+    Stage2Config,
     development_arms,
     digest_rows,
     stable_seed,
     stage1_arms,
+    stage2_cells,
+    stage2_trajectory_arms,
 )
 from . import DEVELOPMENT_ONLY_NOTICE, DEV_CODE_VERSION, STAGE1_CODE_VERSION
 from .proxies import (
@@ -64,7 +70,11 @@ from .scenarios import (
     ORDINARY_FIXTURES,
     generate_fixture,
     generate_stage1_population,
+    generate_stage2_population,
     permute_ppi_within_observable_strata,
+    stage2_control_parameters,
+    Stage2GeneratorParameters,
+    Stage2MarginCalibration,
 )
 
 
@@ -707,6 +717,7 @@ def replay_artifact(path: Path) -> dict:
     if document.get("schema_version") in {
         "ppi-stage1-replay-v1",
         "ppi-stage1-replay-v2",
+        "ppi-stage2-replay-v1",
     }:
         return replay_stage1_artifact_document(document)
     return replay_serialized_audits(document)
@@ -773,10 +784,21 @@ def simulate_named_audit(
     budget: int,
     ridge: float,
     rng_seed: int,
+    execution_mode: str = "replay_grade",
 ) -> dict:
-    """Audit from named observable score channels; hidden outcomes enter only at reveal."""
+    """Audit from named observable scores; hidden outcomes enter only at reveal.
+
+    ``replay_grade`` preserves the accepted Stage 1 forensic record and its
+    immediate independent replay.  ``lean`` performs the identical sampling
+    and statistical calculation without constructing those large serialized
+    vectors.  The scalar trace retained by both modes is sufficient for bulk
+    Stage 2 aggregation and direct equivalence tests.
+    """
 
     arm.validate()
+    if execution_mode not in {"replay_grade", "lean"}:
+        raise ValueError("named audit execution mode must be replay_grade or lean")
+    replay_grade = execution_mode == "replay_grade"
     if budget > population.size:
         raise InvalidDevelopmentRun("budget exceeds named population size")
     remaining = list(population.item_ids())
@@ -798,6 +820,7 @@ def simulate_named_audit(
     wealth_steps: List[WealthStep] = []
     trace: List[dict] = []
     selection_order: List[str] = []
+    selected_items = set()
     observed_errors = 0
     observed_complements = 0
     min_q = math.inf
@@ -823,53 +846,93 @@ def simulate_named_audit(
             if beta_estimate.warning:
                 warnings.append(f"step {step_number}: {beta_estimate.warning}")
         support_minimum = None
-        support_term_count = 0
-        for item_id in remaining:
-            probability = probabilities[item_id]
-            support_u = (
-                cv_scores[item_id] - expected_cv
-                if arm.control_variate_score_key is not None
-                else 0.0
-            )
-            for support_outcome in (0, 1):
-                support_z = (1 - support_outcome) / (population.size * probability)
+        support_term_count = 2 * len(remaining)
+        if replay_grade:
+            for item_id in remaining:
+                probability = probabilities[item_id]
+                support_u = (
+                    cv_scores[item_id] - expected_cv
+                    if arm.control_variate_score_key is not None
+                    else 0.0
+                )
+                for support_outcome in (0, 1):
+                    support_z = (1 - support_outcome) / (
+                        population.size * probability
+                    )
+                    support_constant = (
+                        support_z
+                        + beta_value * support_u
+                        + observed_complements / population.size
+                    )
+                    support_term = SupportTerm(
+                        item_id=item_id,
+                        outcome=support_outcome,
+                        score=cv_scores[item_id],
+                        probability=probability,
+                        control_value=support_u,
+                        beta=beta_value,
+                        constant_term=support_constant,
+                    )
+                    if (
+                        support_minimum is None
+                        or support_constant < support_minimum.constant_term
+                    ):
+                        support_minimum = support_term
+        else:
+            # For fixed item/q/CV state, outcome=1 has support_z=0 while
+            # outcome=0 adds the strictly positive 1/(N*q).  Therefore the
+            # exact support-wide minimum is attained among outcome=1 terms.
+            for item_id in remaining:
+                probability = probabilities[item_id]
+                support_u = (
+                    cv_scores[item_id] - expected_cv
+                    if arm.control_variate_score_key is not None
+                    else 0.0
+                )
                 support_constant = (
-                    support_z + beta_value * support_u + observed_complements / population.size
+                    beta_value * support_u
+                    + observed_complements / population.size
                 )
-                support_term = SupportTerm(
-                    item_id=item_id,
-                    outcome=support_outcome,
-                    score=cv_scores[item_id],
-                    probability=probability,
-                    control_value=support_u,
-                    beta=beta_value,
-                    constant_term=support_constant,
-                )
-                support_term_count += 1
-                if support_minimum is None or support_constant < support_minimum.constant_term:
-                    support_minimum = support_term
+                if (
+                    support_minimum is None
+                    or support_constant < support_minimum.constant_term
+                ):
+                    support_minimum = SupportTerm(
+                        item_id=item_id,
+                        outcome=1,
+                        score=cv_scores[item_id],
+                        probability=probability,
+                        control_value=support_u,
+                        beta=beta_value,
+                        constant_term=support_constant,
+                    )
         draw_uniform = rng.random()
         selected = select_item_from_variate(probabilities, draw_uniform)
-        if selected in selection_order:
+        if selected in selected_items:
             raise InvalidDevelopmentRun("duplicate named item selection")
-        pre_reveal = serialize_named_pre_reveal_draw(
-            step=step_number,
-            remaining_item_ids=remaining,
-            sampling_score_key=arm.sampling_score_key,
-            sampling_scores=sampling_scores,
-            control_variate_score_key=arm.control_variate_score_key,
-            control_variate_scores=cv_scores,
-            sampling_policy=arm.sampling_policy,
-            epsilon_samp=arm.epsilon_samp,
-            probabilities=probabilities,
-            normalization=normalization,
-            draw_uniform=draw_uniform,
-            selected_item_id=selected,
-        )
-        replay = replay_named_pre_reveal_draw(pre_reveal, channels, remaining)
-        if not replay.passed:
-            raise InvalidDevelopmentRun(f"named serialized replay failed: {replay.reason}")
+        pre_reveal = None
+        if replay_grade:
+            pre_reveal = serialize_named_pre_reveal_draw(
+                step=step_number,
+                remaining_item_ids=remaining,
+                sampling_score_key=arm.sampling_score_key,
+                sampling_scores=sampling_scores,
+                control_variate_score_key=arm.control_variate_score_key,
+                control_variate_scores=cv_scores,
+                sampling_policy=arm.sampling_policy,
+                epsilon_samp=arm.epsilon_samp,
+                probabilities=probabilities,
+                normalization=normalization,
+                draw_uniform=draw_uniform,
+                selected_item_id=selected,
+            )
+            replay = replay_named_pre_reveal_draw(pre_reveal, channels, remaining)
+            if not replay.passed:
+                raise InvalidDevelopmentRun(
+                    f"named serialized replay failed: {replay.reason}"
+                )
         probability = probabilities[selected]
+        step_min_q = min(probabilities.values())
         u_value = (
             cv_scores[selected] - expected_cv
             if arm.control_variate_score_key is not None
@@ -894,12 +957,17 @@ def simulate_named_audit(
         if arm.control_variate_score_key is not None:
             beta_history.append((z_value, u_value))
         selection_order.append(selected)
-        min_q = min(min_q, min(probabilities.values()))
+        selected_items.add(selected)
+        min_q = min(min_q, step_min_q)
         max_importance_weight = max(max_importance_weight, importance_weight)
         trace.append(
             {
                 "step": step_number,
                 "pre_reveal": pre_reveal,
+                "draw_uniform": draw_uniform,
+                "selected_item_id": selected,
+                "selected_q": probability,
+                "minimum_q_at_step": step_min_q,
                 "revealed_outcome": outcome,
                 "complement": complement,
                 "importance_weight": importance_weight,
@@ -925,7 +993,9 @@ def simulate_named_audit(
         "errors_observed": observed_errors,
         "min_q": min_q,
         "max_importance_weight": max_importance_weight,
-        "q_replay_passed": True,
+        "q_replay_passed": True if replay_grade else None,
+        "forensic_replay_performed": replay_grade,
+        "execution_mode": execution_mode,
         "warnings": warnings,
     }
 
@@ -980,6 +1050,700 @@ def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFiniteP
             "reported_lower_g_bound": evaluation.final_log_wealth_at_bound,
         },
         "warnings": warning_rows,
+    }
+
+
+STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v2"
+
+
+@dataclass(frozen=True)
+class Stage2PopulationWorkUnit:
+    unit_id: str
+    parameters: Stage2GeneratorParameters
+    replicate_id: int
+    population_seed: int
+    normalization: Stage2MarginCalibration
+    config: Stage2Config
+    capture_replay_evidence: bool = False
+
+
+def stage2_replay_replicate(config: Stage2Config | None = None) -> int:
+    """Outcome-independent identity for the two paired forensic traces."""
+
+    config = config or Stage2Config()
+    config.validate()
+    return stable_seed(
+        config.evaluation_master_seed,
+        "stage2-replay-evidence",
+        "p_jde=0.003",
+        "pi_h=0.75",
+        "B=500",
+        "UP+SP-epsilon=0.2",
+    ) % config.replicates
+
+
+def _stage2_population_digest(population: NamedFinitePopulation) -> str:
+    channels = population.all_observable_scores()
+    outcomes = population.hidden_outcomes()
+    return digest_rows(
+        (
+            item_id,
+            tuple((key, channels[key][item_id]) for key in sorted(channels)),
+            outcomes[item_id],
+        )
+        for item_id in population.item_ids()
+    )
+
+
+def _stage2_mixture_result(
+    wealth_steps: Sequence[WealthStep],
+    population: NamedFinitePopulation,
+    config: Stage2Config,
+) -> dict:
+    status = "valid"
+    upper_bound = None
+    empty = False
+    monotonicity_status = "not_evaluated"
+    support_status = "passed"
+    warnings: List[str] = []
+    try:
+        evaluation = evaluate_running_mixture_bound(
+            wealth_steps,
+            config.lambda_grid,
+            config.alpha_cs,
+            config.inversion_tolerance,
+            config.monotonicity_tolerance,
+        )
+        upper_bound = evaluation.upper_error_bound
+        monotonicity_status = evaluation.monotonicity_status
+    except EmptyConfidenceSet as error:
+        status = "empty_confidence_set"
+        empty = True
+        warnings.append(str(error))
+    except SupportAdmissibilityFailure as error:
+        status = "invalid_support_admissibility"
+        support_status = "failed"
+        warnings.append(str(error))
+    except MonotonicityFailure as error:
+        status = "invalid_monotonicity"
+        monotonicity_status = "failed"
+        warnings.append(str(error))
+    except ControlledNumericalFailure as error:
+        status = "invalid_numerical"
+        warnings.append(str(error))
+    return {
+        "validity_status": status,
+        "empty_confidence_set": empty,
+        "final_upper_bound": upper_bound,
+        "coverage_indicator": (
+            upper_bound is not None
+            and upper_bound + config.inversion_tolerance
+            >= population.true_prevalence
+        ),
+        "monotonicity_status": monotonicity_status,
+        "support_status": support_status,
+        "warnings": warnings,
+    }
+
+
+@dataclass(frozen=True)
+class LeanAuditWorkUnit:
+    work_unit_id: str
+    population: NamedFinitePopulation
+    arm: Stage1ArmSpec
+    budget: int
+    ridge: float
+    rng_seed: int
+    lambda_grid: Tuple[float, ...] = (0.05, 0.10, 0.25, 0.50)
+    alpha_cs: float = 0.05
+    inversion_tolerance: float = 1e-10
+    monotonicity_tolerance: float = 1e-10
+
+
+def _execute_lean_audit_work_unit(work_unit: LeanAuditWorkUnit) -> dict:
+    audit = simulate_named_audit(
+        work_unit.population,
+        work_unit.arm,
+        work_unit.budget,
+        work_unit.ridge,
+        work_unit.rng_seed,
+        execution_mode="lean",
+    )
+    evaluation = evaluate_running_mixture_bound(
+        audit["wealth_steps"],
+        work_unit.lambda_grid,
+        work_unit.alpha_cs,
+        work_unit.inversion_tolerance,
+        work_unit.monotonicity_tolerance,
+    )
+    return {
+        "work_unit_id": work_unit.work_unit_id,
+        "rng_seed": work_unit.rng_seed,
+        "selection_order": audit["selection_order"],
+        "draw_uniforms": [row["draw_uniform"] for row in audit["trace"]],
+        "selected_q": [row["selected_q"] for row in audit["trace"]],
+        "revealed_outcomes": [
+            row["revealed_outcome"] for row in audit["trace"]
+        ],
+        "validity_status": "valid",
+        "upper_bound": evaluation.upper_error_bound,
+        "minimum_q": audit["min_q"],
+        "maximum_importance_weight": audit["max_importance_weight"],
+    }
+
+
+def execute_lean_audit_work_units(
+    work_units: Sequence[LeanAuditWorkUnit],
+    workers: int,
+) -> List[dict]:
+    """Execution-order invariant bounded worker primitive used by Stage 2."""
+
+    if workers <= 0:
+        raise ValueError("lean audit worker count must be positive")
+    units = tuple(sorted(work_units, key=lambda unit: unit.work_unit_id))
+    if len({unit.work_unit_id for unit in units}) != len(units):
+        raise ValueError("lean audit work-unit IDs must be unique")
+    if workers == 1:
+        results = [_execute_lean_audit_work_unit(unit) for unit in units]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_execute_lean_audit_work_unit, units))
+    return sorted(results, key=lambda result: result["work_unit_id"])
+
+
+def _stage2_prefix_record(
+    work_unit: Stage2PopulationWorkUnit,
+    generated: object,
+    population_digest: str,
+    arm: Stage1ArmSpec,
+    audit: Mapping[str, object],
+    budget: int,
+    audit_seed: int,
+) -> dict:
+    prefix_trace = audit["trace"][:budget]
+    mixture = _stage2_mixture_result(
+        audit["wealth_steps"][:budget], generated.population, work_unit.config
+    )
+    selected_q = [float(row["selected_q"]) for row in prefix_trace]
+    importance_weights = [float(row["importance_weight"]) for row in prefix_trace]
+    errors = sum(int(row["revealed_outcome"]) for row in prefix_trace)
+    return {
+        "schema_version": work_unit.config.schema_version,
+        "code_version": STAGE2_CODE_VERSION,
+        "unit_id": work_unit.unit_id,
+        "p_jde_target": work_unit.parameters.p_jde_target,
+        "p_jde_realized": generated.population.true_prevalence,
+        "pi_H": work_unit.parameters.pi_h,
+        "control_id": work_unit.parameters.control_id,
+        "replicate_id": work_unit.replicate_id,
+        "population_seed": work_unit.population_seed,
+        "population_digest": population_digest,
+        "audit_seed": audit_seed,
+        "arm_id": arm.arm_id,
+        "conceptual_arm": arm.conceptual_arm,
+        "B": budget,
+        "epsilon_samp": arm.epsilon_samp,
+        "K": 8,
+        "lambda_grid": list(work_unit.config.lambda_grid),
+        "observed_event_count": errors,
+        "zero_event": errors == 0,
+        "final_upper_bound": mixture["final_upper_bound"],
+        "coverage_indicator": mixture["coverage_indicator"],
+        "minimum_q": min(float(row["minimum_q_at_step"]) for row in prefix_trace),
+        "minimum_selected_q": min(selected_q),
+        "maximum_importance_weight": max(importance_weights),
+        "validity_status": mixture["validity_status"],
+        "empty_confidence_set": mixture["empty_confidence_set"],
+        "monotonicity_status": mixture["monotonicity_status"],
+        "support_status": mixture["support_status"],
+        "warnings": mixture["warnings"],
+        "collider_before": generated.collider_diagnostic[
+            "association_before_agreement"
+        ],
+        "collider_after": generated.collider_diagnostic[
+            "association_after_agreement"
+        ],
+        "forensic_replay_performed": audit["forensic_replay_performed"],
+    }
+
+
+def _run_stage2_population_work_unit(
+    work_unit: Stage2PopulationWorkUnit,
+) -> dict:
+    """Generate one population and all nine nested-budget audit trajectories."""
+
+    work_unit.config.validate()
+    generated = generate_stage2_population(
+        work_unit.parameters,
+        work_unit.population_seed,
+        work_unit.normalization,
+        work_unit.config,
+    )
+    population = generated.population
+    population_digest = _stage2_population_digest(population)
+    rows: List[dict] = []
+    replay_audits: List[dict] = []
+    population_record = None
+    for arm in stage2_trajectory_arms(work_unit.config):
+        selected_forensic_arm = (
+            work_unit.capture_replay_evidence
+            and (
+                arm.conceptual_arm == "UP"
+                or (
+                    arm.conceptual_arm == "SP"
+                    and arm.epsilon_samp == 0.2
+                )
+            )
+        )
+        execution_mode = "replay_grade" if selected_forensic_arm else "lean"
+        audit_seed = stable_seed(
+            work_unit.config.evaluation_master_seed,
+            work_unit.parameters.p_jde_target,
+            work_unit.parameters.pi_h,
+            work_unit.parameters.control_id,
+            work_unit.replicate_id,
+            arm.arm_id,
+            "stage2-audit",
+        )
+        audit = simulate_named_audit(
+            population,
+            arm,
+            max(work_unit.config.budgets),
+            work_unit.config.ridge,
+            audit_seed,
+            execution_mode=execution_mode,
+        )
+        for budget in work_unit.config.budgets:
+            rows.append(
+                _stage2_prefix_record(
+                    work_unit,
+                    generated,
+                    population_digest,
+                    arm,
+                    audit,
+                    budget,
+                    audit_seed,
+                )
+            )
+        if selected_forensic_arm:
+            if population_record is None:
+                population_record = _stage1_population_record(
+                    generated,
+                    work_unit.replicate_id,
+                    work_unit.population_seed,
+                )
+            replay_audits.append(
+                {
+                    "audit_id": f"{work_unit.unit_id}:{arm.arm_id}",
+                    "scenario_id": population.scenario_id,
+                    "replicate_id": work_unit.replicate_id,
+                    "k": 8,
+                    "arm": asdict(arm),
+                    "rng_seed": audit_seed,
+                    "selection_order": audit["selection_order"],
+                    "trace": audit["trace"],
+                    "lambda_grid": list(work_unit.config.lambda_grid),
+                    "lambda_grid_digest": _lambda_grid_digest(
+                        work_unit.config.lambda_grid
+                    ),
+                    "mixture_result": _stage2_mixture_result(
+                        audit["wealth_steps"], population, work_unit.config
+                    ),
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            row["p_jde_target"],
+            row["pi_H"],
+            row["replicate_id"],
+            row["arm_id"],
+            row["B"],
+        )
+    )
+    return {
+        "unit_id": work_unit.unit_id,
+        "rows": rows,
+        "replay_population": population_record,
+        "replay_audits": replay_audits,
+        "identity_sentinel_passed": generated.identity_sentinel_passed,
+        "structural_invariance_passed": generated.structural_invariance_passed,
+    }
+
+
+def execute_stage2_work_units(
+    work_units: Sequence[Stage2PopulationWorkUnit],
+    workers: int = 1,
+) -> List[dict]:
+    """Execute deterministic independent units and canonically sort output."""
+
+    if workers <= 0:
+        raise ValueError("Stage 2 worker count must be positive")
+    units = tuple(sorted(work_units, key=lambda unit: unit.unit_id))
+    if len({unit.unit_id for unit in units}) != len(units):
+        raise ValueError("Stage 2 work-unit identities must be unique")
+    if workers == 1:
+        results = [_run_stage2_population_work_unit(unit) for unit in units]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_run_stage2_population_work_unit, units))
+    return sorted(results, key=lambda result: result["unit_id"])
+
+
+def build_stage2_primary_work_units(
+    calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
+    normalization: Stage2MarginCalibration,
+    config: Stage2Config | None = None,
+) -> Tuple[Stage2PopulationWorkUnit, ...]:
+    config = config or Stage2Config()
+    config.validate()
+    expected = {
+        (p_jde, pi_h)
+        for p_jde in config.p_jde_targets
+        for pi_h in config.pi_h_values
+    }
+    if set(calibrations) != expected:
+        raise ValueError("Stage 2 risk calibration map is incomplete")
+    replay_replicate = stage2_replay_replicate(config)
+    units = []
+    for p_jde, pi_h in sorted(expected):
+        parameters = calibrations[(p_jde, pi_h)]
+        for replicate in range(config.replicates):
+            unit_id = f"p{p_jde:.12g}-h{pi_h:.12g}-r{replicate:04d}"
+            units.append(
+                Stage2PopulationWorkUnit(
+                    unit_id=unit_id,
+                    parameters=parameters,
+                    replicate_id=replicate,
+                    population_seed=stable_seed(
+                        config.evaluation_master_seed,
+                        p_jde,
+                        pi_h,
+                        replicate,
+                        "stage2-population",
+                    ),
+                    normalization=normalization,
+                    config=config,
+                    capture_replay_evidence=(
+                        p_jde == 3e-3
+                        and pi_h == 0.75
+                        and replicate == replay_replicate
+                    ),
+                )
+            )
+    return tuple(units)
+
+
+def build_stage2_control_work_units(
+    base_parameters: Stage2GeneratorParameters,
+    normalization: Stage2MarginCalibration,
+    control_ids: Sequence[str],
+    replicate_count: int,
+    seed_namespace: str,
+    config: Stage2Config | None = None,
+) -> Tuple[Stage2PopulationWorkUnit, ...]:
+    """Build only the accepted controls using a declared development namespace."""
+
+    config = config or Stage2Config()
+    config.validate()
+    if seed_namespace not in {"negative_control_calibration", "evaluation_controls"}:
+        raise ValueError("unknown Stage 2 control seed namespace")
+    if replicate_count <= 0:
+        raise ValueError("Stage 2 control replicate count must be positive")
+    master_seed = (
+        config.negative_control_master_seed
+        if seed_namespace == "negative_control_calibration"
+        else config.evaluation_master_seed
+    )
+    units = []
+    for control_id in control_ids:
+        parameters = stage2_control_parameters(base_parameters, control_id)
+        for replicate in range(replicate_count):
+            unit_id = f"control-{control_id}-r{replicate:04d}"
+            units.append(
+                Stage2PopulationWorkUnit(
+                    unit_id,
+                    parameters,
+                    replicate,
+                    stable_seed(
+                        master_seed,
+                        seed_namespace,
+                        control_id,
+                        replicate,
+                        "stage2-control-population",
+                    ),
+                    normalization,
+                    config,
+                    False,
+                )
+            )
+    return tuple(units)
+
+
+def _proportion(rows: Sequence[Mapping[str, object]], field: str) -> float:
+    if not rows:
+        raise ValueError("cannot summarize an empty Stage 2 record group")
+    return math.fsum(bool(row[field]) for row in rows) / len(rows)
+
+
+def summarize_stage2_cells(
+    records: Sequence[Mapping[str, object]],
+    config: Stage2Config | None = None,
+) -> List[dict]:
+    """Apply eligibility before computing the SP-versus-UP contrast."""
+
+    config = config or Stage2Config()
+    config.validate()
+    summaries: List[dict] = []
+    for cell in stage2_cells(config):
+        up = [
+            row
+            for row in records
+            if row["p_jde_target"] == cell.p_jde_target
+            and row["pi_H"] == cell.pi_h
+            and row["B"] == cell.budget
+            and row["conceptual_arm"] == "UP"
+            and row["control_id"] == "primary"
+        ]
+        sp = [
+            row
+            for row in records
+            if row["p_jde_target"] == cell.p_jde_target
+            and row["pi_H"] == cell.pi_h
+            and row["B"] == cell.budget
+            and row["conceptual_arm"] == "SP"
+            and row["epsilon_samp"] == cell.epsilon_samp
+            and row["control_id"] == "primary"
+        ]
+        if len(up) != config.replicates or len(sp) != config.replicates:
+            raise ValueError(
+                f"Stage 2 cell {cell.cell_id} lacks the required paired replicates"
+            )
+        coverage_up = _proportion(up, "coverage_indicator")
+        coverage_sp = _proportion(sp, "coverage_indicator")
+        zero_up = _proportion(up, "zero_event")
+        zero_sp = _proportion(sp, "zero_event")
+        invalid_count = sum(
+            str(row["validity_status"]).startswith("invalid")
+            for row in (*up, *sp)
+        )
+        empty_count = sum(bool(row["empty_confidence_set"]) for row in (*up, *sp))
+        up_nonvacuous = math.fsum(
+            row["final_upper_bound"] is not None
+            and float(row["final_upper_bound"]) < 1.0
+            for row in up
+        ) / len(up)
+        exclusion_reasons = []
+        if coverage_up < 0.94:
+            exclusion_reasons.append("coverage_UP_below_0.94")
+        if coverage_sp < 0.94:
+            exclusion_reasons.append("coverage_SP_below_0.94")
+        if max(zero_up, zero_sp) > 0.50:
+            exclusion_reasons.append("zero_event_proportion_above_0.50")
+        if invalid_count:
+            exclusion_reasons.append("invalid_confidence_set_present")
+        if empty_count:
+            exclusion_reasons.append("empty_confidence_set_present")
+        if up_nonvacuous < 0.90:
+            exclusion_reasons.append("UP_upper_bound_nonvacuous_below_0.90")
+        eligible = not exclusion_reasons
+        mean_up = math.fsum(float(row["final_upper_bound"]) for row in up) / len(up) if all(
+            row["final_upper_bound"] is not None for row in up
+        ) else None
+        mean_sp = math.fsum(float(row["final_upper_bound"]) for row in sp) / len(sp) if all(
+            row["final_upper_bound"] is not None for row in sp
+        ) else None
+        delta = None
+        if eligible:
+            if mean_up is None or mean_sp is None or mean_up <= 0.0:
+                raise ValueError("eligible Stage 2 cell has an undefined Delta denominator")
+            delta = 1.0 - mean_sp / mean_up
+        summaries.append(
+            {
+                "cell_id": cell.cell_id,
+                "p_jde_target": cell.p_jde_target,
+                "B": cell.budget,
+                "pi_H": cell.pi_h,
+                "epsilon_samp": cell.epsilon_samp,
+                "replicate_count": config.replicates,
+                "coverage_UP": coverage_up,
+                "coverage_SP": coverage_sp,
+                "zero_event_proportion_UP": zero_up,
+                "zero_event_proportion_SP": zero_sp,
+                "invalid_count": invalid_count,
+                "empty_confidence_set_count": empty_count,
+                "proportion_UP_bound_below_one": up_nonvacuous,
+                "mean_upper_bound_UP": mean_up,
+                "mean_upper_bound_SP": mean_sp,
+                "eligible": eligible,
+                "exclusion_reasons": exclusion_reasons,
+                "Delta_cell": delta,
+            }
+        )
+    return summaries
+
+
+def empirical_gamma_nc(
+    calibration_g_by_class: Mapping[str, Sequence[float]],
+) -> Mapping[str, float]:
+    """Freeze the 97.5th percentile separately in each reserved null class."""
+
+    required = {"pi_h_zero", "permuted_ppi", "constant_ppi"}
+    if set(calibration_g_by_class) != required:
+        raise ValueError("negative-control calibration classes are incomplete")
+    result = {}
+    for control_id, values in calibration_g_by_class.items():
+        ordered = sorted(float(value) for value in values)
+        if not ordered or any(not math.isfinite(value) for value in ordered):
+            raise ValueError("negative-control calibration values are invalid")
+        index = max(0, math.ceil(0.975 * len(ordered)) - 1)
+        result[control_id] = ordered[index]
+    return result
+
+
+def classify_stage2_development(
+    cell_summaries: Sequence[Mapping[str, object]],
+    negative_control_passed: Mapping[str, bool],
+) -> str:
+    required = {"pi_h_zero", "permuted_ppi", "constant_ppi"}
+    if set(negative_control_passed) != required:
+        raise ValueError("Stage 2 negative-control decision set is incomplete")
+    if not all(negative_control_passed.values()):
+        return "INVALID_DEVELOPMENT"
+    if any(bool(row["eligible"]) for row in cell_summaries):
+        return "FEASIBLE_REGION_PRESENT"
+    return "INCONCLUSIVE_NO_ELIGIBLE_REGION"
+
+
+def aggregate_stage2_delta(
+    cell_summaries: Sequence[Mapping[str, object]],
+) -> Optional[float]:
+    values = [float(row["Delta_cell"]) for row in cell_summaries if row["eligible"]]
+    return None if not values else math.fsum(values) / len(values)
+
+
+def stage2_manifest(
+    config: Stage2Config,
+    normalization: Stage2MarginCalibration,
+    calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
+    gamma_nc: Mapping[str, float],
+    workers: int,
+) -> dict:
+    config.validate()
+    if workers <= 0:
+        raise ValueError("Stage 2 manifest worker count must be positive")
+    return {
+        "schema_version": config.schema_version,
+        "code_version": STAGE2_CODE_VERSION,
+        "manifest_type": config.manifest_type,
+        "development_only": True,
+        "configuration": asdict(config),
+        "margin_normalization": asdict(normalization),
+        "risk_calibrations": [
+            {
+                "p_jde_target": key[0],
+                "pi_H": key[1],
+                **asdict(calibrations[key]),
+            }
+            for key in sorted(calibrations)
+        ],
+        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "seed_namespaces": {
+            "margin_and_risk_calibration": config.calibration_master_seed,
+            "negative_control_calibration": config.negative_control_master_seed,
+            "evaluation": config.evaluation_master_seed,
+            "bootstrap": config.bootstrap_master_seed,
+            "disjoint": True,
+        },
+        "worker_count": workers,
+        "worker_count_is_execution_only": True,
+        "nested_budget_rule": "one B=500 trajectory; report prefixes 50,100,200,500",
+        "replay_selection_rule": {
+            "p_jde_target": 3e-3,
+            "pi_H": 0.75,
+            "B": 500,
+            "paired_arms": ["UP", "SP"],
+            "SP_epsilon_samp": 0.2,
+            "replicate_id": stage2_replay_replicate(config),
+            "selection_is_outcome_independent": True,
+        },
+        "confirmatory_manifest": False,
+    }
+
+
+def write_stage2_execution_artifacts(
+    output_directory: Path,
+    results: Sequence[Mapping[str, object]],
+    manifest: Mapping[str, object],
+    config: Stage2Config,
+) -> dict:
+    """Write compact bulk rows and exactly two predeclared forensic traces."""
+
+    _ensure_external_output(output_directory, _repository_root())
+    output_directory.mkdir(parents=True, exist_ok=True)
+    ordered_results = sorted(results, key=lambda result: str(result["unit_id"]))
+    compact_path = output_directory / "stage2_compact_results.jsonl"
+    compact_hash = hashlib.sha256()
+    compact_size = 0
+    compact_record_count = 0
+    replay_populations = []
+    replay_audits = []
+    with compact_path.open("wb") as stream:
+        for result in ordered_results:
+            for row in result["rows"]:
+                encoded = _canonical_json_bytes(row)
+                stream.write(encoded)
+                compact_hash.update(encoded)
+                compact_size += len(encoded)
+                compact_record_count += 1
+            population = result.get("replay_population")
+            if population is not None:
+                replay_populations.append(population)
+            replay_audits.extend(result.get("replay_audits", ()))
+    if len(replay_audits) != 2 or len(replay_populations) != 1:
+        raise InvalidDevelopmentRun(
+            "Stage 2 evidence selection must yield one population and two paired traces"
+        )
+    replay_document = {
+        "schema_version": "ppi-stage2-replay-v1",
+        "notice": DEVELOPMENT_ONLY_NOTICE,
+        "code_version": STAGE2_CODE_VERSION,
+        "configuration": asdict(config),
+        "lambda_grid_digest": _lambda_grid_digest(config.lambda_grid),
+        "transformation_bank": {
+            "bank_id": frozen_transformation_bank().bank_id,
+            "digest": frozen_transformation_bank().digest,
+            "k4_indices": list(frozen_transformation_bank().k4_indices),
+            "transformation_ids": [
+                row.transformation_id
+                for row in frozen_transformation_bank().transformations
+            ],
+        },
+        "trace_selection_rule": manifest["replay_selection_rule"],
+        "populations": replay_populations,
+        "audits": replay_audits,
+    }
+    replay_bytes = _canonical_json_bytes(replay_document)
+    replay_path = output_directory / "stage2_selected_replay_traces.json"
+    replay_path.write_bytes(replay_bytes)
+    replay_result = replay_stage1_artifact_document(replay_document)
+    if replay_result["failure_count"]:
+        raise InvalidDevelopmentRun("selected Stage 2 trace replay failed")
+    manifest_path = output_directory / "stage2_manifest.json"
+    manifest_bytes = _canonical_json_bytes(manifest)
+    manifest_path.write_bytes(manifest_bytes)
+    return {
+        "compact_path": str(compact_path),
+        "compact_record_count": compact_record_count,
+        "compact_size_bytes": compact_size,
+        "compact_sha256": compact_hash.hexdigest(),
+        "replay_path": str(replay_path),
+        "replay_trace_count": len(replay_audits),
+        "replay_size_bytes": len(replay_bytes),
+        "replay_sha256": _sha256_bytes(replay_bytes),
+        "replay_result": replay_result,
+        "manifest_path": str(manifest_path),
+        "manifest_size_bytes": len(manifest_bytes),
+        "manifest_sha256": _sha256_bytes(manifest_bytes),
     }
 
 
