@@ -375,11 +375,14 @@ STAGE2_BUDGETS: Tuple[int, ...] = (50, 100, 200, 500)
 STAGE2_PI_H_VALUES: Tuple[float, ...] = (0.0, 0.5, 0.75)
 STAGE2_EPSILON_VALUES: Tuple[float, ...] = (0.1, 0.2, 0.4)
 STAGE2_LAMBDA_GRID: Tuple[float, ...] = (0.05, 0.10, 0.25, 0.50)
+STAGE2_TAU_NC = 0.05
+STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES = 10_000
 STAGE2_CONTROL_IDS: Tuple[str, ...] = (
     "pi_h_zero",
     "fragility_unrelated_to_error",
     "stable_shared_false_belief",
-    "permuted_ppi",
+    "conditional_permuted_ppi",
+    "global_permuted_ppi",
     "constant_ppi",
     "favourable_high_fragility",
 )
@@ -423,10 +426,17 @@ class Stage2Config:
     monotonicity_tolerance: float = 1e-10
     calibration_master_seed: int = 2026081801
     negative_control_master_seed: int = 2026081802
+    negative_control_bootstrap_seed: int = stable_seed(
+        2026081802, "negative-control-bootstrap"
+    )
     evaluation_master_seed: int = 2026081803
     bootstrap_master_seed: int = 2026081804
+    tau_nc: float = STAGE2_TAU_NC
+    negative_control_bootstrap_replicates: int = (
+        STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES
+    )
     manifest_type: str = "development_only_ppi_stage2"
-    schema_version: str = "ppi-stage2-lean-v2"
+    schema_version: str = "ppi-stage2-lean-v3"
 
     def validate(self) -> None:
         if self.manifest_type != "development_only_ppi_stage2":
@@ -456,11 +466,33 @@ class Stage2Config:
         seeds = (
             self.calibration_master_seed,
             self.negative_control_master_seed,
+            self.negative_control_bootstrap_seed,
             self.evaluation_master_seed,
             self.bootstrap_master_seed,
         )
         if len(set(seeds)) != len(seeds):
             raise ValueError("Stage 2 seed namespaces must be disjoint")
+        expected_nc_bootstrap_seed = stable_seed(
+            self.negative_control_master_seed, "negative-control-bootstrap"
+        )
+        if self.negative_control_bootstrap_seed != expected_nc_bootstrap_seed:
+            raise ValueError(
+                "negative-control bootstrap seed must derive only from its namespace"
+            )
+        if self.negative_control_bootstrap_seed in {
+            self.evaluation_master_seed,
+            self.bootstrap_master_seed,
+        }:
+            raise ValueError(
+                "negative-control bootstrap may not consume evaluation/bootstrap seeds"
+            )
+        if self.tau_nc != STAGE2_TAU_NC:
+            raise ValueError("Stage 2 tau_NC is frozen at 0.05")
+        if (
+            self.negative_control_bootstrap_replicates
+            != STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES
+        ):
+            raise ValueError("Stage 2 negative-control bootstrap count is frozen")
         for tolerance in (self.inversion_tolerance, self.monotonicity_tolerance):
             if tolerance <= 0.0 or not math.isfinite(tolerance):
                 raise ValueError("Stage 2 tolerances must be finite and positive")

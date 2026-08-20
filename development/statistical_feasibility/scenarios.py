@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import random
 from typing import Dict, List, Mapping, Sequence, Tuple
@@ -253,6 +253,29 @@ def permute_ppi_within_observable_strata(
                 (
                     ("ppi_k8", ppi_k8),
                     ("ppi_k4", ppi_k4),
+                    ("confidence_margin", item.scores()["confidence_margin"]),
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def permute_ppi_globally(
+    items: Sequence[ObservableScoreItem], seed: int
+) -> Tuple[ObservableScoreItem, ...]:
+    """Permute the observable PPI multiset without strata or hidden fields."""
+
+    source_indices = list(range(len(items)))
+    random.Random(stable_seed(seed, "global-permuted-ppi")).shuffle(source_indices)
+    result = []
+    for item, source_index in zip(items, source_indices):
+        source_scores = items[source_index].scores()
+        result.append(
+            ObservableScoreItem(
+                item.item_id,
+                (
+                    ("ppi_k8", source_scores["ppi_k8"]),
+                    ("ppi_k4", source_scores["ppi_k4"]),
                     ("confidence_margin", item.scores()["confidence_margin"]),
                 ),
             )
@@ -565,7 +588,8 @@ class Stage2GeneratorParameters:
             "pi_h_zero",
             "fragility_unrelated_to_error",
             "stable_shared_false_belief",
-            "permuted_ppi",
+            "conditional_permuted_ppi",
+            "global_permuted_ppi",
             "constant_ppi",
             "favourable_high_fragility",
         }:
@@ -634,7 +658,7 @@ def _stage2_scenario_spec(parameters: Stage2GeneratorParameters) -> Stage1Scenar
     pi_h = parameters.pi_h
     stable_rate = parameters.stable_false_belief_rate
     unrelated = control_id == "fragility_unrelated_to_error"
-    permuted = control_id == "permuted_ppi"
+    permuted = control_id == "conditional_permuted_ppi"
     if control_id in {"pi_h_zero", "stable_shared_false_belief"}:
         pi_h = 0.0
     if control_id == "favourable_high_fragility":
@@ -677,7 +701,6 @@ def generate_stage2_population(
         tau_verifier=config.tau_verifier,
         normalization_primary=normalization.normalization_primary,
         normalization_verifier=normalization.normalization_verifier,
-        master_seed=config.evaluation_master_seed,
         inversion_tolerance=config.inversion_tolerance,
         monotonicity_tolerance=config.monotonicity_tolerance,
         maximum_generated_candidates=config.maximum_generated_candidates,
@@ -693,6 +716,24 @@ def generate_stage2_population(
         constant_ppi=parameters.control_id == "constant_ppi",
         manifest_classification="Stage 2 development-only; never confirmatory",
     )
+    if parameters.control_id == "global_permuted_ppi":
+        permuted_items = permute_ppi_globally(generated.population.items, seed)
+        manifest = dict(generated.scenario_manifest)
+        manifest.update(
+            {
+                "global_permuted_ppi": True,
+                "global_permutation_uses_hidden_outcomes": False,
+            }
+        )
+        generated = replace(
+            generated,
+            population=NamedFinitePopulation(
+                generated.population.scenario_id,
+                permuted_items,
+                generated.population.evaluator_outcomes,
+            ),
+            scenario_manifest=manifest,
+        )
     return generated
 
 
@@ -804,7 +845,8 @@ def stage2_control_parameters(
         )
     if control_id in {
         "fragility_unrelated_to_error",
-        "permuted_ppi",
+        "conditional_permuted_ppi",
+        "global_permuted_ppi",
         "constant_ppi",
     }:
         return Stage2GeneratorParameters(

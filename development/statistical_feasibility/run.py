@@ -89,14 +89,16 @@ class Stage2ControlBoundFailure(InvalidDevelopmentRun):
 
     def __init__(self, failure_record: Mapping[str, object]):
         self.failure_record = dict(failure_record)
+        blockers = list(self.failure_record.get("blocking_rows", ()))
+        representative = blockers[0] if blockers else self.failure_record
         super().__init__(
             "control G has an undefined "
-            f"{self.failure_record['bound_role']}: "
-            f"control_id={self.failure_record['control_id']}, "
-            f"replicate_id={self.failure_record['replicate_id']}, "
-            f"arm={self.failure_record['conceptual_arm']}, "
-            f"epsilon_samp={self.failure_record['epsilon_samp']}, "
-            f"B={self.failure_record['B']}"
+            f"{representative['bound_role']}: "
+            f"control_id={representative['control_id']}, "
+            f"replicate_id={representative['replicate_id']}, "
+            f"arm={representative['conceptual_arm']}, "
+            f"epsilon_samp={representative['epsilon_samp']}, "
+            f"B={representative['B']}; blockers={len(blockers) or 1}"
         )
 
 
@@ -1086,7 +1088,7 @@ def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFiniteP
     }
 
 
-STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v4"
+STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v5"
 
 STAGE2_PREFLIGHT_MARGIN_REPLICATES = 3
 STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES = 200
@@ -1094,7 +1096,8 @@ STAGE2_PREFLIGHT_ADDITIONAL_CONTROL_REPLICATES = 5
 STAGE2_PREFLIGHT_CONTROL_ANCHOR = (3e-2, 0.5)
 STAGE2_PREFLIGHT_NEGATIVE_CONTROLS = (
     "pi_h_zero",
-    "permuted_ppi",
+    "conditional_permuted_ppi",
+    "global_permuted_ppi",
     "constant_ppi",
 )
 STAGE2_PREFLIGHT_ADDITIONAL_CONTROLS = (
@@ -1180,7 +1183,7 @@ def _stage2_mixture_result(
     except ControlledNumericalFailure as error:
         status = "invalid_numerical"
         warnings.append(str(error))
-    return {
+    raw = {
         "validity_status": status,
         "empty_confidence_set": empty,
         "final_upper_bound": upper_bound,
@@ -1193,6 +1196,25 @@ def _stage2_mixture_result(
         "support_status": support_status,
         "warnings": warnings,
     }
+    raw["effective_upper_bound"] = effective_upper_bound(raw)
+    return raw
+
+
+def effective_upper_bound(record: Mapping[str, object]) -> float:
+    """Return the sole Stage 2 aggregation bound without rewriting raw evidence."""
+
+    raw = record.get("final_upper_bound")
+    status = str(record.get("validity_status"))
+    empty = bool(record.get("empty_confidence_set"))
+    if empty or status == "empty_confidence_set":
+        if raw is not None or not (empty and status == "empty_confidence_set"):
+            raise ValueError("empty confidence-set record has inconsistent raw fields")
+        return 1.0
+    if status == "valid" and raw is not None:
+        value = float(raw)
+        if math.isfinite(value) and 0.0 <= value <= 1.0:
+            return value
+    raise ValueError("non-empty Stage 2 bound is genuinely undefined or invalid")
 
 
 @dataclass(frozen=True)
@@ -1297,6 +1319,7 @@ def _stage2_prefix_record(
         "observed_event_count": errors,
         "zero_event": errors == 0,
         "final_upper_bound": mixture["final_upper_bound"],
+        "effective_upper_bound": mixture["effective_upper_bound"],
         "coverage_indicator": mixture["coverage_indicator"],
         "minimum_q": min(float(row["minimum_q_at_step"]) for row in prefix_trace),
         "minimum_selected_q": min(selected_q),
@@ -1559,6 +1582,89 @@ def _proportion(rows: Sequence[Mapping[str, object]], field: str) -> float:
     return math.fsum(bool(row[field]) for row in rows) / len(rows)
 
 
+def type7_percentile(values: Sequence[float], probability: float) -> float:
+    """Deterministic Hyndman-Fan type-7 percentile."""
+
+    ordered = sorted(float(value) for value in values)
+    if not ordered or not 0.0 <= probability <= 1.0:
+        raise ValueError("percentile inputs are invalid")
+    if any(not math.isfinite(value) for value in ordered):
+        raise ValueError("percentile values must be finite")
+    position = probability * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return math.fsum(((1.0 - weight) * ordered[lower], weight * ordered[upper]))
+
+
+def _binomial_cdf(successes: int, trials: int, probability: float) -> float:
+    return math.fsum(
+        math.comb(trials, index)
+        * probability**index
+        * (1.0 - probability) ** (trials - index)
+        for index in range(successes + 1)
+    )
+
+
+def clopper_pearson_upper(
+    successes: int, trials: int, alpha: float = 0.05
+) -> float:
+    """One-sided exact binomial upper limit, used only as a diagnostic."""
+
+    if not 0 <= successes <= trials or trials <= 0 or not 0.0 < alpha < 1.0:
+        raise ValueError("Clopper-Pearson inputs are invalid")
+    if successes == trials:
+        return 1.0
+    low, high = successes / trials, 1.0
+    for _ in range(80):
+        midpoint = (low + high) / 2.0
+        if _binomial_cdf(successes, trials, midpoint) > alpha:
+            low = midpoint
+        else:
+            high = midpoint
+    return high
+
+
+def pooled_empty_rate_cluster_lower(
+    records: Sequence[Mapping[str, object]],
+    development_bootstrap_seed: int,
+    bootstrap_replicates: int = 10_000,
+) -> dict:
+    """Cluster-bootstrap the pooled empty rate by immutable population identity."""
+
+    if not records or bootstrap_replicates <= 0:
+        raise ValueError("pooled empty-rate bootstrap inputs are invalid")
+    clusters: Dict[Tuple[float, float, int], List[bool]] = {}
+    for row in records:
+        key = (
+            float(row["p_jde_target"]),
+            float(row["pi_H"]),
+            int(row["replicate_id"]),
+        )
+        clusters.setdefault(key, []).append(bool(row["empty_confidence_set"]))
+    ordered = [clusters[key] for key in sorted(clusters)]
+    observed = math.fsum(math.fsum(cluster) for cluster in ordered) / math.fsum(
+        len(cluster) for cluster in ordered
+    )
+    rng = random.Random(development_bootstrap_seed)
+    boot = []
+    for _ in range(bootstrap_replicates):
+        sampled = [ordered[rng.randrange(len(ordered))] for _ in ordered]
+        boot.append(
+            math.fsum(math.fsum(cluster) for cluster in sampled)
+            / math.fsum(len(cluster) for cluster in sampled)
+        )
+    lower = type7_percentile(boot, 0.05)
+    return {
+        "pooled_empty_rate": observed,
+        "cluster_bootstrap_95_lower": lower,
+        "cluster_count": len(ordered),
+        "bootstrap_replicates": bootstrap_replicates,
+    }
+
+
 def summarize_stage2_cells(
     records: Sequence[Mapping[str, object]],
     config: Stage2Config | None = None,
@@ -1596,16 +1702,17 @@ def summarize_stage2_cells(
         coverage_sp = _proportion(sp, "coverage_indicator")
         zero_up = _proportion(up, "zero_event")
         zero_sp = _proportion(sp, "zero_event")
-        invalid_count = sum(
-            str(row["validity_status"]).startswith("invalid")
-            for row in (*up, *sp)
-        )
-        empty_count = sum(bool(row["empty_confidence_set"]) for row in (*up, *sp))
-        up_nonvacuous = math.fsum(
-            row["final_upper_bound"] is not None
-            and float(row["final_upper_bound"]) < 1.0
-            for row in up
-        ) / len(up)
+        invalid_count = sum(str(row["validity_status"]).startswith("invalid") for row in (*up, *sp))
+        if invalid_count:
+            raise InvalidDevelopmentRun(
+                f"Stage 2 cell {cell.cell_id} contains a genuine invalid bound"
+            )
+        empty_up = sum(bool(row["empty_confidence_set"]) for row in up)
+        empty_sp = sum(bool(row["empty_confidence_set"]) for row in sp)
+        effective_up = [effective_upper_bound(row) for row in up]
+        effective_sp = [effective_upper_bound(row) for row in sp]
+        mean_up = math.fsum(effective_up) / len(effective_up)
+        mean_sp = math.fsum(effective_sp) / len(effective_sp)
         exclusion_reasons = []
         if coverage_up < 0.94:
             exclusion_reasons.append("coverage_UP_below_0.94")
@@ -1613,22 +1720,12 @@ def summarize_stage2_cells(
             exclusion_reasons.append("coverage_SP_below_0.94")
         if max(zero_up, zero_sp) > 0.50:
             exclusion_reasons.append("zero_event_proportion_above_0.50")
-        if invalid_count:
-            exclusion_reasons.append("invalid_confidence_set_present")
-        if empty_count:
-            exclusion_reasons.append("empty_confidence_set_present")
-        if up_nonvacuous < 0.90:
-            exclusion_reasons.append("UP_upper_bound_nonvacuous_below_0.90")
+        if mean_up >= 1.0:
+            exclusion_reasons.append("mean_effective_UP_not_below_1")
         eligible = not exclusion_reasons
-        mean_up = math.fsum(float(row["final_upper_bound"]) for row in up) / len(up) if all(
-            row["final_upper_bound"] is not None for row in up
-        ) else None
-        mean_sp = math.fsum(float(row["final_upper_bound"]) for row in sp) / len(sp) if all(
-            row["final_upper_bound"] is not None for row in sp
-        ) else None
         delta = None
         if eligible:
-            if mean_up is None or mean_sp is None or mean_up <= 0.0:
+            if mean_up <= 0.0:
                 raise ValueError("eligible Stage 2 cell has an undefined Delta denominator")
             delta = 1.0 - mean_sp / mean_up
         summaries.append(
@@ -1644,10 +1741,14 @@ def summarize_stage2_cells(
                 "zero_event_proportion_UP": zero_up,
                 "zero_event_proportion_SP": zero_sp,
                 "invalid_count": invalid_count,
-                "empty_confidence_set_count": empty_count,
-                "proportion_UP_bound_below_one": up_nonvacuous,
-                "mean_upper_bound_UP": mean_up,
-                "mean_upper_bound_SP": mean_sp,
+                "empty_confidence_set_count_UP": empty_up,
+                "empty_confidence_set_count_SP": empty_sp,
+                "empty_cs_rate_UP": empty_up / len(up),
+                "empty_cs_rate_SP": empty_sp / len(sp),
+                "empty_cs_rate_UP_cp95_upper": clopper_pearson_upper(empty_up, len(up)),
+                "empty_cs_rate_SP_cp95_upper": clopper_pearson_upper(empty_sp, len(sp)),
+                "mean_effective_upper_bound_UP": mean_up,
+                "mean_effective_upper_bound_SP": mean_sp,
                 "eligible": eligible,
                 "exclusion_reasons": exclusion_reasons,
                 "Delta_cell": delta,
@@ -1657,40 +1758,202 @@ def summarize_stage2_cells(
 
 
 def empirical_gamma_nc(
-    calibration_g_by_class: Mapping[str, Sequence[float]],
-) -> Mapping[str, float]:
-    """Freeze the 97.5th percentile separately in each reserved null class."""
+    cells_by_class: Mapping[str, Sequence[Mapping[str, object]]],
+    config: Stage2Config | None = None,
+) -> dict:
+    """Cluster-bootstrap the four class aggregates and return one gamma_NC."""
 
-    required = {"pi_h_zero", "permuted_ppi", "constant_ppi"}
-    if set(calibration_g_by_class) != required:
+    config = config or Stage2Config()
+    config.validate()
+    required = {
+        "pi_h_zero",
+        "conditional_permuted_ppi",
+        "global_permuted_ppi",
+        "constant_ppi",
+    }
+    if set(cells_by_class) != required:
         raise ValueError("negative-control calibration classes are incomplete")
-    result = {}
-    for control_id, values in calibration_g_by_class.items():
-        ordered = sorted(float(value) for value in values)
-        if not ordered or any(not math.isfinite(value) for value in ordered):
-            raise ValueError("negative-control calibration values are invalid")
-        index = max(0, math.ceil(0.975 * len(ordered)) - 1)
-        result[control_id] = ordered[index]
-    return result
+    class_quantiles = {}
+    class_points = {}
+    cell_quantiles = {}
+    for control_id in sorted(required):
+        cells = list(cells_by_class[control_id])
+        if len(cells) != len(config.epsilon_values) * len(config.budgets):
+            raise ValueError("negative-control class must contain exactly 12 cells")
+        replicate_ids = tuple(cells[0]["replicate_ids"])
+        if len(replicate_ids) != config.replicates:
+            raise ValueError("negative-control cell replicate count is incomplete")
+        if any(tuple(cell["replicate_ids"]) != replicate_ids for cell in cells):
+            raise ValueError("negative-control class cells are not population-paired")
+        class_points[control_id] = math.fsum(float(cell["G_cell"]) for cell in cells) / len(cells)
+        constant_cells = all(
+            len(set(cell["effective_UP"])) == 1
+            and len(set(cell["effective_SP"])) == 1
+            for cell in cells
+        )
+        if constant_cells:
+            per_cell_bootstrap = [[float(cell["G_cell"])] for cell in cells]
+            class_bootstrap = [class_points[control_id]]
+        else:
+            rng = random.Random(stable_seed(config.negative_control_bootstrap_seed, control_id))
+            class_bootstrap = []
+            per_cell_bootstrap = [[] for _ in cells]
+            for _ in range(config.negative_control_bootstrap_replicates):
+                indices = [rng.randrange(len(replicate_ids)) for _ in replicate_ids]
+                boot_cells = []
+                for cell_index, cell in enumerate(cells):
+                    up = cell["effective_UP"]
+                    sp = cell["effective_SP"]
+                    mean_up = math.fsum(float(up[index]) for index in indices) / len(indices)
+                    mean_sp = math.fsum(float(sp[index]) for index in indices) / len(indices)
+                    if mean_up <= 0.0:
+                        raise InvalidDevelopmentRun("negative-control bootstrap denominator is zero")
+                    value = 1.0 - mean_sp / mean_up
+                    per_cell_bootstrap[cell_index].append(value)
+                    boot_cells.append(value)
+                class_bootstrap.append(math.fsum(boot_cells) / len(boot_cells))
+        class_quantiles[control_id] = type7_percentile(class_bootstrap, 0.975)
+        cell_quantiles[control_id] = {
+            str(cell["cell_id"]): type7_percentile(values, 0.975)
+            for cell, values in zip(cells, per_cell_bootstrap)
+        }
+    gamma = max(class_quantiles.values())
+    return {
+        "gamma_NC": gamma,
+        "tau_NC": config.tau_nc,
+        "validity_gate_passed": gamma <= config.tau_nc,
+        "class_point_estimates": class_points,
+        "class_bootstrap_q_0_975": class_quantiles,
+        "cell_bootstrap_q_0_975": cell_quantiles,
+        "bootstrap_replicates": config.negative_control_bootstrap_replicates,
+        "percentile_type": 7,
+        "bootstrap_seed": config.negative_control_bootstrap_seed,
+    }
 
 
 def classify_stage2_development(
     cell_summaries: Sequence[Mapping[str, object]],
-    negative_control_passed: Mapping[str, bool],
+    gamma_nc: float,
+    delta_lower: Optional[float],
+    pooled_empty_rate_lower: float = 0.0,
+    config: Stage2Config | None = None,
 ) -> str:
-    required = {"pi_h_zero", "permuted_ppi", "constant_ppi"}
-    if set(negative_control_passed) != required:
-        raise ValueError("Stage 2 negative-control decision set is incomplete")
-    if not all(negative_control_passed.values()):
-        return "INVALID_DEVELOPMENT"
-    if any(bool(row["eligible"]) for row in cell_summaries):
-        return "FEASIBLE_REGION_PRESENT"
-    return "INCONCLUSIVE_NO_ELIGIBLE_REGION"
+    config = config or Stage2Config()
+    config.validate()
+    if pooled_empty_rate_lower > config.alpha_cs:
+        return "IMPLEMENTATION_FAILURE_HOLD"
+    if gamma_nc > config.tau_nc:
+        return "INVALID_DEVELOPMENT_SWEEP"
+    if not stage2_structural_representation_complete(cell_summaries, config):
+        return "INCONCLUSIVE_BY_DEGENERACY"
+    if delta_lower is None:
+        raise ValueError("interpretable Stage 2 classification requires Delta lower limit")
+    if delta_lower > gamma_nc:
+        return "POSITIVE_DEVELOPMENT_LEVEL"
+    if delta_lower > 0.0:
+        return "INCONCLUSIVE"
+    return "NEGATIVE_PPI_PATH_REJECTED"
+
+
+def stage2_structural_representation_complete(
+    cell_summaries: Sequence[Mapping[str, object]],
+    config: Stage2Config | None = None,
+) -> bool:
+    config = config or Stage2Config()
+    expected = {
+        (p_jde, budget, pi_h)
+        for p_jde in config.p_jde_targets
+        for budget in config.budgets
+        for pi_h in config.pi_h_values
+    }
+    represented = {
+        (float(row["p_jde_target"]), int(row["B"]), float(row["pi_H"]))
+        for row in cell_summaries
+        if bool(row["eligible"])
+    }
+    return represented == expected
+
+
+def bootstrap_stage2_delta_lower(
+    records: Sequence[Mapping[str, object]],
+    cell_summaries: Sequence[Mapping[str, object]],
+    development_bootstrap_seed: int,
+    config: Stage2Config | None = None,
+    bootstrap_replicates: int = 10_000,
+) -> dict:
+    """Population-cluster lower limit for the equally weighted eligible Delta."""
+
+    config = config or Stage2Config()
+    config.validate()
+    if development_bootstrap_seed == config.bootstrap_master_seed:
+        raise ValueError("confirmatory bootstrap namespace is forbidden in development")
+    if not stage2_structural_representation_complete(cell_summaries, config):
+        return {
+            "Delta_bar": None,
+            "Delta_bar_minus": None,
+            "status": "INCONCLUSIVE_BY_DEGENERACY",
+        }
+    eligible = [row for row in cell_summaries if bool(row["eligible"])]
+    cell_vectors = []
+    for cell in eligible:
+        up_rows = sorted(
+            (
+                row
+                for row in records
+                if row["p_jde_target"] == cell["p_jde_target"]
+                and row["pi_H"] == cell["pi_H"]
+                and row["B"] == cell["B"]
+                and row["conceptual_arm"] == "UP"
+                and row["control_id"] == "primary"
+            ),
+            key=lambda row: int(row["replicate_id"]),
+        )
+        sp_rows = sorted(
+            (
+                row
+                for row in records
+                if row["p_jde_target"] == cell["p_jde_target"]
+                and row["pi_H"] == cell["pi_H"]
+                and row["B"] == cell["B"]
+                and row["conceptual_arm"] == "SP"
+                and row["epsilon_samp"] == cell["epsilon_samp"]
+                and row["control_id"] == "primary"
+            ),
+            key=lambda row: int(row["replicate_id"]),
+        )
+        if len(up_rows) != config.replicates or len(sp_rows) != config.replicates:
+            raise InvalidDevelopmentRun("eligible Delta bootstrap cell is incomplete")
+        cell_vectors.append(
+            (
+                tuple(effective_upper_bound(row) for row in up_rows),
+                tuple(effective_upper_bound(row) for row in sp_rows),
+            )
+        )
+    point = aggregate_stage2_delta(cell_summaries)
+    rng = random.Random(development_bootstrap_seed)
+    boot = []
+    for _ in range(bootstrap_replicates):
+        indices = [rng.randrange(config.replicates) for _ in range(config.replicates)]
+        deltas = []
+        for up, sp in cell_vectors:
+            mean_up = math.fsum(up[index] for index in indices) / len(indices)
+            mean_sp = math.fsum(sp[index] for index in indices) / len(indices)
+            deltas.append(1.0 - mean_sp / mean_up)
+        boot.append(math.fsum(deltas) / len(deltas))
+    return {
+        "Delta_bar": point,
+        "Delta_bar_minus": type7_percentile(boot, 0.05),
+        "status": "INTERPRETABLE",
+        "bootstrap_replicates": bootstrap_replicates,
+        "percentile_type": 7,
+    }
 
 
 def aggregate_stage2_delta(
     cell_summaries: Sequence[Mapping[str, object]],
 ) -> Optional[float]:
+    if not stage2_structural_representation_complete(cell_summaries):
+        return None
     values = [float(row["Delta_cell"]) for row in cell_summaries if row["eligible"]]
     return None if not values else math.fsum(values) / len(values)
 
@@ -1699,7 +1962,7 @@ def stage2_manifest(
     config: Stage2Config,
     normalization: Stage2MarginCalibration,
     calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
-    gamma_nc: Mapping[str, float],
+    gamma_nc: Mapping[str, object],
     workers: int,
 ) -> dict:
     config.validate()
@@ -1720,10 +1983,12 @@ def stage2_manifest(
             }
             for key in sorted(calibrations)
         ],
-        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "gamma_NC": gamma_nc["gamma_NC"],
+        "negative_control_calibration": dict(gamma_nc),
         "seed_namespaces": {
             "margin_and_risk_calibration": config.calibration_master_seed,
             "negative_control_calibration": config.negative_control_master_seed,
+            "negative_control_bootstrap": config.negative_control_bootstrap_seed,
             "evaluation": config.evaluation_master_seed,
             "bootstrap": config.bootstrap_master_seed,
             "disjoint": True,
@@ -1772,6 +2037,11 @@ def stage2_preflight_plan(config: Stage2Config | None = None) -> dict:
             "replicates_per_control": STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES,
             "seed_namespace": "negative_control_calibration",
             "gamma_percentile": 0.975,
+            "bootstrap_replicates": config.negative_control_bootstrap_replicates,
+            "bootstrap_percentile_type": 7,
+            "bootstrap_seed": config.negative_control_bootstrap_seed,
+            "tau_NC": config.tau_nc,
+            "estimand": "cell ratio of means; equal-weight class mean; max class q0.975",
             "anchor": {
                 "p_jde_target": STAGE2_PREFLIGHT_CONTROL_ANCHOR[0],
                 "pi_H": STAGE2_PREFLIGHT_CONTROL_ANCHOR[1],
@@ -1834,66 +2104,99 @@ def _stage2_control_g_values(
     results: Sequence[Mapping[str, object]],
     control_ids: Sequence[str],
     config: Stage2Config,
-) -> Dict[str, List[float]]:
-    """Extract G=1-U_SP/U_UP at B=500 from complete paired control trajectories."""
+) -> Dict[str, List[dict]]:
+    """Form one ratio-of-means G for every (class, epsilon, B) null cell."""
 
     expected = set(control_ids)
-    values = {control_id: [] for control_id in control_ids}
+    grouped: Dict[Tuple[str, float, int], Dict[int, Tuple[float, float]]] = {}
+    blockers: List[dict] = []
 
-    def undefined_bound_failure(
+    def bound_or_block(
         control_id: str, row: Mapping[str, object], bound_role: str
-    ) -> Stage2ControlBoundFailure:
-        return Stage2ControlBoundFailure(
-            {
-                "failure_class": "undefined_control_bound",
-                "reason": "gamma_NC was not calibrated because a required control "
-                "bound is undefined; no replicate was excluded or imputed",
-                "bound_role": bound_role,
-                "control_id": control_id,
-                "replicate_id": row["replicate_id"],
-                "conceptual_arm": row["conceptual_arm"],
-                "epsilon_samp": row["epsilon_samp"],
-                "B": row["B"],
-                "validity_status": row["validity_status"],
-                "empty_confidence_set": row["empty_confidence_set"],
-                "monotonicity_status": row["monotonicity_status"],
-                "support_status": row["support_status"],
-                "warnings": row["warnings"],
-            }
-        )
+    ) -> Optional[float]:
+        try:
+            value = effective_upper_bound(row)
+            if bound_role == "UP denominator" and value <= 0.0:
+                raise ValueError("zero denominator")
+            return value
+        except ValueError:
+            blockers.append(
+                {
+                    "failure_class": "undefined_control_bound",
+                    "bound_role": bound_role,
+                    "control_id": control_id,
+                    "replicate_id": row["replicate_id"],
+                    "conceptual_arm": row["conceptual_arm"],
+                    "epsilon_samp": row["epsilon_samp"],
+                    "B": row["B"],
+                    "validity_status": row["validity_status"],
+                    "empty_confidence_set": row["empty_confidence_set"],
+                    "monotonicity_status": row["monotonicity_status"],
+                    "support_status": row["support_status"],
+                    "warnings": row["warnings"],
+                }
+            )
+            return None
 
     for result in results:
-        rows = [
-            row for row in result["rows"] if row["B"] == max(config.budgets)
-        ]
+        rows = list(result["rows"])
         if not rows:
-            raise InvalidDevelopmentRun("control work unit lacks its maximum-B row")
+            raise InvalidDevelopmentRun("control work unit has no rows")
         control_id = str(rows[0]["control_id"])
-        if control_id not in expected or any(
-            str(row["control_id"]) != control_id for row in rows
-        ):
+        if control_id not in expected or any(str(row["control_id"]) != control_id for row in rows):
             raise InvalidDevelopmentRun("control work-unit identity is inconsistent")
-        up = [row for row in rows if row["conceptual_arm"] == "UP"]
-        sp = [row for row in rows if row["conceptual_arm"] == "SP"]
-        if len(up) != 1 or len(sp) != len(config.epsilon_values):
-            raise InvalidDevelopmentRun("control work unit lacks paired UP/SP trajectories")
-        upper_up = up[0]["final_upper_bound"]
-        if upper_up is None or float(upper_up) <= 0.0:
-            raise undefined_bound_failure(control_id, up[0], "UP denominator")
-        for row in sp:
-            upper_sp = row["final_upper_bound"]
-            if upper_sp is None:
-                raise undefined_bound_failure(control_id, row, "SP numerator")
-            values[control_id].append(1.0 - float(upper_sp) / float(upper_up))
-    expected_count = STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES * len(
-        config.epsilon_values
-    )
-    for control_id, control_values in values.items():
-        if len(control_values) != expected_count:
-            raise InvalidDevelopmentRun(
-                f"control {control_id} has an incomplete G calibration sample"
-            )
-    return values
+        replicate_id = int(rows[0]["replicate_id"])
+        for budget in config.budgets:
+            budget_rows = [row for row in rows if row["B"] == budget]
+            up_rows = [row for row in budget_rows if row["conceptual_arm"] == "UP"]
+            sp_rows = [row for row in budget_rows if row["conceptual_arm"] == "SP"]
+            if len(up_rows) != 1 or len(sp_rows) != len(config.epsilon_values):
+                raise InvalidDevelopmentRun("control work unit lacks paired UP/SP trajectories")
+            up_value = bound_or_block(control_id, up_rows[0], "UP denominator")
+            for row in sp_rows:
+                sp_value = bound_or_block(control_id, row, "SP numerator")
+                if up_value is not None and sp_value is not None:
+                    key = (control_id, float(row["epsilon_samp"]), budget)
+                    grouped.setdefault(key, {})[replicate_id] = (up_value, sp_value)
+    if blockers:
+        representative = blockers[0]
+        raise Stage2ControlBoundFailure(
+            {
+                **representative,
+                "reason": "gamma_NC was not calibrated because required non-empty "
+                "control bounds are genuinely undefined; no replicate was excluded "
+                "or numerically substituted",
+                "blocking_rows": blockers,
+                "blocking_row_count": len(blockers),
+            }
+        )
+    cells_by_class: Dict[str, List[dict]] = {control_id: [] for control_id in control_ids}
+    for control_id in control_ids:
+        for epsilon in config.epsilon_values:
+            for budget in config.budgets:
+                paired = grouped.get((control_id, epsilon, budget), {})
+                replicate_ids = tuple(sorted(paired))
+                if len(replicate_ids) != config.replicates:
+                    raise InvalidDevelopmentRun(
+                        f"control {control_id} cell has an incomplete population sample"
+                    )
+                up = tuple(paired[index][0] for index in replicate_ids)
+                sp = tuple(paired[index][1] for index in replicate_ids)
+                mean_up = math.fsum(up) / len(up)
+                mean_sp = math.fsum(sp) / len(sp)
+                cells_by_class[control_id].append(
+                    {
+                        "cell_id": f"{control_id}-e{epsilon:.12g}-b{budget}",
+                        "control_id": control_id,
+                        "epsilon_samp": epsilon,
+                        "B": budget,
+                        "replicate_ids": replicate_ids,
+                        "effective_UP": up,
+                        "effective_SP": sp,
+                        "G_cell": 1.0 - mean_sp / mean_up,
+                    }
+                )
+    return cells_by_class
 
 
 def _execution_environment() -> dict:
@@ -1929,7 +2232,7 @@ def _write_stage2_preflight_artifacts(
         for result in sorted(results, key=lambda item: str(item["unit_id"]))
         for row in result["rows"]
     ]
-    record_bytes = b"".join(_canonical_json_bytes(row) + b"\n" for row in ordered_rows)
+    record_bytes = b"".join(_canonical_json_bytes(row) for row in ordered_rows)
     manifest_bytes = _canonical_json_bytes(manifest)
     report_bytes = _canonical_json_bytes(report)
     paths["manifest"].write_bytes(manifest_bytes)
@@ -1958,13 +2261,13 @@ def _stage2_preflight_manifest(
     risk_seeds: Sequence[int],
     calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
     workers: int,
-    gamma_nc: Optional[Mapping[str, float]],
+    gamma_nc: Optional[Mapping[str, object]],
     failure_record: Optional[Mapping[str, object]] = None,
 ) -> dict:
     """Build a complete preflight manifest for either success or a controlled stop."""
 
     return {
-        "schema_version": "ppi-stage2-control-preflight-v2",
+        "schema_version": "ppi-stage2-control-preflight-v3",
         "notice": DEVELOPMENT_ONLY_NOTICE,
         "code_version": STAGE2_CODE_VERSION,
         "git_provenance": dict(provenance),
@@ -1977,7 +2280,8 @@ def _stage2_preflight_manifest(
             {"p_jde_target": key[0], "pi_H": key[1], **asdict(calibrations[key])}
             for key in sorted(calibrations)
         ],
-        "gamma_NC": None if gamma_nc is None else dict(sorted(gamma_nc.items())),
+        "gamma_NC": None if gamma_nc is None else gamma_nc["gamma_NC"],
+        "negative_control_calibration": None if gamma_nc is None else dict(gamma_nc),
         "gamma_nc_status": "not_calibrated" if gamma_nc is None else "calibrated",
         "gamma_nc_not_calibrated_reason": (
             None
@@ -1993,16 +2297,17 @@ def _stage2_preflight_manifest(
 def _stage2_preflight_report(
     phase_runtimes: Mapping[str, Optional[float]],
     work_unit_counts: Mapping[str, int],
-    gamma_nc: Optional[Mapping[str, float]],
+    gamma_nc: Optional[Mapping[str, object]],
     failure_record: Optional[Mapping[str, object]] = None,
 ) -> dict:
     """Report completed work faithfully, including a non-imputed G failure."""
 
     return {
-        "schema_version": "ppi-stage2-control-preflight-report-v2",
+        "schema_version": "ppi-stage2-control-preflight-report-v3",
         "phase_runtimes_seconds": dict(phase_runtimes),
         "work_unit_counts": dict(work_unit_counts),
-        "gamma_NC": None if gamma_nc is None else dict(sorted(gamma_nc.items())),
+        "gamma_NC": None if gamma_nc is None else gamma_nc["gamma_NC"],
+        "negative_control_calibration": None if gamma_nc is None else dict(gamma_nc),
         "gamma_nc_status": "not_calibrated" if gamma_nc is None else "calibrated",
         "gamma_nc_not_calibrated_reason": (
             None
@@ -2055,7 +2360,8 @@ def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
         gamma_nc = empirical_gamma_nc(
             _stage2_control_g_values(
                 negative_results, STAGE2_PREFLIGHT_NEGATIVE_CONTROLS, config
-            )
+            ),
+            config,
         )
     except Stage2ControlBoundFailure as failure:
         negative_seconds = time.perf_counter() - negative_started
@@ -2142,7 +2448,8 @@ def run_stage2_preflight(output_directory: Path, workers: int) -> dict:
         "mode": "stage2_preflight",
         "development_only": True,
         "git_head": provenance["head"],
-        "gamma_NC": dict(sorted(gamma_nc.items())),
+        "gamma_NC": gamma_nc["gamma_NC"],
+        "negative_control_calibration": gamma_nc,
         "phase_runtimes_seconds": report["phase_runtimes_seconds"],
         "work_unit_counts": report["work_unit_counts"],
         "evaluation_or_bootstrap_work_executed": False,

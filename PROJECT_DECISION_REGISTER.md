@@ -1985,7 +1985,8 @@ The accepted minimal development structure is:
 * `H_i in {0,1}` is binary shared-fragile-mechanism membership;
 * `pi_H` is the scenario-cell mixture axis;
 * `pi_H = 0` is a mandatory null mechanism;
-* `pi_H = 1` is the maximally favourable fragile-mechanism condition;
+* `pi_H = 0.75` is the high-fragility reference condition: the largest shared-fragility level jointly realizable with the frozen joint-dangerous-error prevalence targets under the accepted generator and calibration structure;
+* `pi_H = 0.75` is not a mathematical maximum; behaviour at complete shared fragility `pi_H = 1` is outside this experiment's evidence;
 * stable shared false belief is a separate transformation-invariant mechanism;
 * component-specific error terms remain separate;
 * joint dangerous error and PPI are both derived outcomes;
@@ -2151,19 +2152,28 @@ Using the union-bound alternative requires a separate recorded PM/PI decision be
 
 No mathematical modification of the accepted single-lambda betting factors is authorized by this decision.
 
+For Stage 2 aggregation define the derived effective upper bound:
+
+```text
+U_tilde = final_upper_bound, when the confidence set is non-empty
+U_tilde = 1.0, when the confidence set is empty
+```
+
+On an empty confidence set, raw `final_upper_bound` remains `null`, raw `validity_status` remains `empty_confidence_set`, and raw `coverage_indicator` remains `false`. `U_tilde` is written alongside the raw evidence and is the only bound entering `Delta`, `G`, or `gamma_NC`. No replicate is deleted and no raw field is overwritten.
+
 ### 53.7 Endpoint hierarchy
 
 #### Level 1 — feasibility and validity gate
 
 A cell is eligible only if all conditions hold before examining its proxy contrast:
 
-* empirical coverage is at least 0.94 at nominal 0.95 in both UP and SP;
-* zero-oracle-event replicate proportion is at most 0.50;
-* invalid-confidence-set proportion is 0;
-* empty-confidence-set proportion is 0;
-* `U_UP(B) < 1` in at least 0.90 of replicates.
+* E1: empirical running-intersection coverage is at least 0.94 at nominal 0.95 in both UP and SP;
+* E2: `mean_r(U_tilde_UP) < 1`;
+* E3: the zero-revealed-dangerous-error replicate proportion is at most 0.50 in either compared arm.
 
 Every ineligible cell remains in the feasibility map with an explicit exclusion reason.
+
+Empty-confidence-set rate is a non-gating diagnostic reported per arm with a one-sided 95% Clopper-Pearson upper limit. At project level, pool the trajectory-level empty rate cluster-robustly by population. If its one-sided 95% lower limit exceeds `alpha_CS = 0.05`, hold the sweep for implementation investigation.
 
 #### Level 2 — conditional proxy endpoint
 
@@ -2172,8 +2182,8 @@ For each eligible cell:
 ```text
 Delta_cell =
     1 -
-    mean_r(U_SP(B; r)) /
-    mean_r(U_UP(B; r))
+    mean_r(U_tilde_SP(B; r)) /
+    mean_r(U_tilde_UP(B; r))
 ```
 
 Aggregate:
@@ -2188,15 +2198,7 @@ Negative values remain in the analysis and mean directed sampling performed wors
 
 No cell is weighted by perceived realism or by replicate count.
 
-The number and identity of eligible cells must be reported.
-
-Result interpretation:
-
-* no eligible cells: INCONCLUSIVE;
-* lower confidence bound on `Delta` greater than frozen practical threshold `delta`: POSITIVE;
-* upper confidence bound on `Delta` below `delta`: NEGATIVE;
-* interval crosses `delta`: INCONCLUSIVE;
-* failed coverage or failed mandatory negative control: INVALID.
+The number and identity of eligible cells must be reported. All 48 scientific strata `(p_JDE, B, pi_H)` must contain at least one eligible epsilon configuration. If any stratum has none, aggregate `Delta` is not interpreted and the result is `INCONCLUSIVE_BY_DEGENERACY`; the full feasibility map remains reported. All eligible epsilon cells receive equal weight; no best-epsilon selection is permitted.
 
 The feasibility map is always reported across all cells.
 
@@ -2211,9 +2213,10 @@ The following controls are mandatory:
 3. `pi_H = 0`;
 4. fragility unrelated to error;
 5. stable shared false belief;
-6. permuted PPI;
+6. conditional-permuted PPI;
 7. constant PPI;
-8. `pi_H = 1` with sufficiently high prevalence to create the maximally favourable PPI condition.
+8. `pi_H = 0.75` high-fragility reference condition at the highest preregistered `p_JDE`;
+9. global-permuted PPI.
 
 Distinct notation is mandatory:
 
@@ -2224,36 +2227,50 @@ Distinct notation is mandatory:
 
 One symbol must not represent more than one of these quantities.
 
-For null-control cells define:
+For each null cell `k = (c, epsilon_samp, B)` define:
 
 ```text
-G =
+G_k =
     1 -
-    mean_r(U_SP(B; r)) /
-    mean_r(U_UP(B; r))
+    mean_r(U_tilde_SP(c, epsilon_samp, B, r)) /
+    mean_r(U_tilde_UP(c, B, r))
 ```
 
-Evaluate separately for:
+`G_k` is a ratio of means, not a mean of per-replicate ratios. Epsilon remains a cell axis. For every null class, `K_c` contains all three epsilon values and all four budgets, for 12 cells, and:
+
+```text
+G_bar_c = equal-weight mean of G_k over K_c
+```
+
+The four null classes are:
 
 * `pi_H = 0`;
-* permuted PPI;
+* conditional-permuted PPI;
+* global-permuted PPI;
 * constant PPI.
 
-Use a one-sided 95% bootstrap confidence interval within each null class.
+Conditional permutation preserves the observable primary-output and confidence-margin stratum structure and tests whether PPI adds case-level information beyond those strata. It does not destroy between-stratum association. Global permutation assigns the existing PPI multiset by a deterministic uniform population-wide permutation without strata or hidden outcomes. It preserves the marginal score multiset and randomizes score assignment independently of hidden error; no claim of exact zero empirical correlation in a finite sample is made.
 
-`gamma_NC` must be obtained from separately reserved development seeds:
+Within each class, bootstrap the population replicate index. One bootstrap index vector is reused across every epsilon/budget cell in that class, preserving shared denominators, nested budgets, and within-population arm correlation. Use 10,000 replicates and the type-7 linear-interpolation percentile. No additional pairing or variance correction is permitted.
 
-1. run the frozen null mechanism on those seeds;
-2. estimate the 97.5th percentile of observed `G`;
-3. freeze that numerical value before the subsequent development evaluation;
-4. never reuse those calibration seeds elsewhere.
+```text
+gamma_NC = max_c Q_0.975[bootstrap(G_bar_c)]
+tau_NC = 0.05
+```
 
-Classifications:
+`gamma_NC` is one project scalar. Its bootstrap seed derives solely from the negative-control namespace and must not consume evaluation or confirmatory-bootstrap seeds.
 
-* upper confidence bound less than or equal to `gamma_NC` in all three classes: negative-control gate passed;
-* upper confidence bound greater than `gamma_NC` for permuted or constant PPI: implementation failure;
-* upper confidence bound greater than `gamma_NC` for `pi_H = 0`, after the other two pass: invalid development sweep and generator investigation required;
-* controls pass but `Delta <= delta` in eligible `pi_H = 1` cells with adequate precision: reject the PPI path before preregistration.
+Classifications, in order:
+
+* pooled empty-rate lower limit above `alpha_CS`: implementation failure; hold for investigation;
+* `gamma_NC > tau_NC`: `INVALID_DEVELOPMENT_SWEEP`; PPI does not advance;
+* any of the 48 scientific strata lacks an eligible epsilon: `INCONCLUSIVE_BY_DEGENERACY`; do not interpret aggregate `Delta`;
+* otherwise let `Delta_bar_minus` be the one-sided 95% lower cluster-bootstrap limit of the equal-weight aggregate over eligible cells;
+* `gamma_NC <= tau_NC` and `Delta_bar_minus > gamma_NC`: positive development-level result;
+* `gamma_NC <= tau_NC` and `0 < Delta_bar_minus <= gamma_NC`: inconclusive;
+* `gamma_NC <= tau_NC` and `Delta_bar_minus <= 0`: negative; reject the PPI path.
+
+These are development classifications, not confirmatory claims.
 
 ### 53.9 Development stages
 
@@ -2303,11 +2320,13 @@ B in {
 with:
 
 * `N_A >= 5000`;
-* `pi_H in {0, 0.5, 1}`;
+* `pi_H in {0, 0.5, 0.75}`;
 * at least 200 replicates per evaluated cell;
 * `epsilon_samp` candidates including `{0.1, 0.2, 0.4}`;
 * the common lambda-mixture construction;
 * reserved calibration seeds separated from evaluation seeds.
+
+The negative-control bootstrap seed is derived solely from the negative-control namespace. Evaluation and confirmatory-bootstrap namespaces remain untouched until their separately authorized uses.
 
 This is a minimum development candidate grid, not a frozen confirmatory grid.
 
@@ -2322,6 +2341,10 @@ Development outputs are used to determine:
 * whether PPI survives the development gate.
 
 Confirmatory seeds, manifests, cell composition, and outcomes remain inaccessible.
+
+#### Pre-evaluation `pi_H` grid repair — 2026-08-20
+
+Reserved calibration evidence in `C-01 stage2_preflight_manifest.json` (SHA-256 `ff2b1072da3687ba5e3443873730f735898ab6a6253075649d41334eacdf3e17`) showed that `pi_H = 1` could not realize the frozen joint-dangerous-error targets under the accepted calibration structure, while `pi_H = 0.75` realized those targets in reserved development calibration. No evaluation or bootstrap workload had been executed. The favourable edge of the feasibility map is therefore `0.75`, not `1`; this record does not support claims about complete shared fragility.
 
 ### 53.10 Non-claims and stop rule
 
@@ -2341,7 +2364,7 @@ Stop or reject the PPI path if:
 * the score-error relationship is directly assigned;
 * mixture coverage fails and no separately authorized fallback exists;
 * negative controls fail;
-* PPI fails to exceed the frozen practical threshold in the maximally favourable condition with adequate precision;
+* PPI fails the frozen development gate at the high-fragility reference condition with adequate precision;
 * useful performance appears only after tuning;
 * implementation requires expansion into retrieval, real providers, or additional domains.
 
