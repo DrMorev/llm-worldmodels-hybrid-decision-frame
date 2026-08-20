@@ -2346,7 +2346,31 @@ Confirmatory seeds, manifests, cell composition, and outcomes remain inaccessibl
 
 Reserved calibration evidence in `C-01 stage2_preflight_manifest.json` (SHA-256 `ff2b1072da3687ba5e3443873730f735898ab6a6253075649d41334eacdf3e17`) showed that `pi_H = 1` could not realize the frozen joint-dangerous-error targets under the accepted calibration structure, while `pi_H = 0.75` realized those targets in reserved development calibration. No evaluation or bootstrap workload had been executed. The favourable edge of the feasibility map is therefore `0.75`, not `1`; this record does not support claims about complete shared fragility.
 
-### 53.10 Non-claims and stop rule
+### 53.10 Development primary-map bootstrap
+
+The development primary-map bootstrap resamples generated population replicates. Populations are indexed by `(p_JDE, pi_H, replicate_id)`, giving exactly 12 generator strata in canonical ascending `(p_JDE, pi_H)` order. The 48 `(p_JDE, B, pi_H)` scientific strata are interpretation and structural-representation strata only; `B` is not a bootstrap-resampling axis.
+
+The derived runtime seed is:
+
+```text
+development_primary_bootstrap_seed =
+    stable_seed(
+        evaluation_master_seed,
+        "stage2_development_primary_bootstrap",
+    )
+```
+
+This is not a new literal seed. The implementation uses one standard-library `random.Random(development_primary_bootstrap_seed)` instance and `rng.randrange(R)`, where `R = 200`. It must not reference, derive from, or consume the reserved confirmatory `bootstrap_master_seed`.
+
+For bootstrap replicate `b = 0,...,9999`, in ascending order, the implementation visits all 12 generator strata in canonical ascending order and draws exactly `R` population-replicate indices with replacement for each stratum. The one index vector for a generator stratum is reused across all four nested budgets, UP, and every epsilon-specific SP arm. No draw is made by budget, epsilon, or arm.
+
+The same 12-stratum bootstrap world supplies both the aggregate-Delta statistic and the pooled empty-confidence-set-rate statistic. Independent RNG streams for those two statistics are forbidden.
+
+Eligibility E1/E2/E3 is evaluated once from the original point-estimate cell summaries. That eligibility mask is frozen before bootstrap resampling and is not recomputed within a bootstrap replicate. Each bootstrap world recomputes eligible-cell mean effective UP and SP bounds, `Delta_cell`, and their equal-weight aggregate. The pooled empty-confidence-set statistic uses the full map independently of eligibility, while consuming the same bootstrap-world indices.
+
+The development primary bootstrap uses 10,000 replicates, a one-sided 95% lower confidence limit, deterministic type-7 percentile interpolation, and the generated population as the cluster/resampling unit. The 48-of-48 structural-representation rule remains unchanged.
+
+### 53.11 Non-claims and stop rule
 
 This contract does not establish:
 

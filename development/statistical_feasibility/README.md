@@ -337,3 +337,30 @@ diagnostics. Aggregate Delta is suppressed as `INCONCLUSIVE_BY_DEGENERACY`
 unless each of the 48 `(p_JDE, B, pi_H)` strata has at least one eligible
 epsilon. These rules are development-only and establish neither PPI usefulness
 nor confirmatory readiness.
+
+## Stage 2 primary-map execution
+
+After independent audit and an accepted commit, the frozen development map is
+invoked by an execution-only runner with:
+
+```text
+python -B -m development.statistical_feasibility.run \
+  --stage2-primary-map \
+  --workers <positive-process-count> \
+  --output-dir <external-directory>
+```
+
+The CLI exposes only worker count and external output location. Risk targets,
+budgets, `pi_H`, epsilon, lambda, alpha, `gamma_NC`, seeds, and bootstrap count
+are frozen in `Stage2Config` and cannot be supplied as command-line options.
+The accepted development `gamma_NC` is `0.014751154135125344`; the command does
+not recalibrate it.
+
+The primary bootstrap has 12 generator strata `(p_JDE, pi_H)`. One
+`random.Random` stream, derived root-first from the evaluation namespace,
+draws 200 replicate indices per stratum for each of 10,000 bootstrap worlds.
+Each stratum vector is reused across nested budgets, UP, and all SP epsilon
+arms. The same world drives aggregate Delta and pooled empty-rate calculations.
+The point-estimate eligibility mask is fixed before bootstrap. The reserved
+confirmatory `bootstrap_master_seed` is neither read nor serialized as a value
+by this development execution path.
