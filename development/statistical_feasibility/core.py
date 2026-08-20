@@ -376,7 +376,9 @@ STAGE2_PI_H_VALUES: Tuple[float, ...] = (0.0, 0.5, 0.75)
 STAGE2_EPSILON_VALUES: Tuple[float, ...] = (0.1, 0.2, 0.4)
 STAGE2_LAMBDA_GRID: Tuple[float, ...] = (0.05, 0.10, 0.25, 0.50)
 STAGE2_TAU_NC = 0.05
+STAGE2_GAMMA_NC = 0.014751154135125344
 STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES = 10_000
+STAGE2_PRIMARY_BOOTSTRAP_REPLICATES = 10_000
 STAGE2_CONTROL_IDS: Tuple[str, ...] = (
     "pi_h_zero",
     "fragility_unrelated_to_error",
@@ -432,9 +434,11 @@ class Stage2Config:
     evaluation_master_seed: int = 2026081803
     bootstrap_master_seed: int = 2026081804
     tau_nc: float = STAGE2_TAU_NC
+    gamma_nc: float = STAGE2_GAMMA_NC
     negative_control_bootstrap_replicates: int = (
         STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES
     )
+    primary_bootstrap_replicates: int = STAGE2_PRIMARY_BOOTSTRAP_REPLICATES
     manifest_type: str = "development_only_ppi_stage2"
     schema_version: str = "ppi-stage2-lean-v3"
 
@@ -468,7 +472,6 @@ class Stage2Config:
             self.negative_control_master_seed,
             self.negative_control_bootstrap_seed,
             self.evaluation_master_seed,
-            self.bootstrap_master_seed,
         )
         if len(set(seeds)) != len(seeds):
             raise ValueError("Stage 2 seed namespaces must be disjoint")
@@ -481,21 +484,53 @@ class Stage2Config:
             )
         if self.negative_control_bootstrap_seed in {
             self.evaluation_master_seed,
-            self.bootstrap_master_seed,
         }:
             raise ValueError(
-                "negative-control bootstrap may not consume evaluation/bootstrap seeds"
+                "negative-control bootstrap may not consume the evaluation seed"
             )
         if self.tau_nc != STAGE2_TAU_NC:
             raise ValueError("Stage 2 tau_NC is frozen at 0.05")
+        if self.gamma_nc != STAGE2_GAMMA_NC:
+            raise ValueError("Stage 2 development gamma_NC is frozen")
         if (
             self.negative_control_bootstrap_replicates
             != STAGE2_NEGATIVE_CONTROL_BOOTSTRAP_REPLICATES
         ):
             raise ValueError("Stage 2 negative-control bootstrap count is frozen")
+        if self.primary_bootstrap_replicates != STAGE2_PRIMARY_BOOTSTRAP_REPLICATES:
+            raise ValueError("Stage 2 primary bootstrap count is frozen at 10,000")
         for tolerance in (self.inversion_tolerance, self.monotonicity_tolerance):
             if tolerance <= 0.0 or not math.isfinite(tolerance):
                 raise ValueError("Stage 2 tolerances must be finite and positive")
+
+
+def stage2_development_primary_bootstrap_seed(
+    config: Stage2Config | None = None,
+) -> int:
+    """Derive the development seed root-first without touching the reserved seed."""
+
+    config = config or Stage2Config()
+    config.validate()
+    return stable_seed(
+        config.evaluation_master_seed,
+        "stage2_development_primary_bootstrap",
+    )
+
+
+def stage2_generator_strata(
+    config: Stage2Config | None = None,
+) -> Tuple[Tuple[float, float], ...]:
+    """Canonical ascending (p_JDE, pi_H) bootstrap-stratum order."""
+
+    config = config or Stage2Config()
+    config.validate()
+    return tuple(
+        sorted(
+            (p_jde, pi_h)
+            for p_jde in config.p_jde_targets
+            for pi_h in config.pi_h_values
+        )
+    )
 
 
 def stage2_cells(config: Stage2Config | None = None) -> Tuple[Stage2Cell, ...]:

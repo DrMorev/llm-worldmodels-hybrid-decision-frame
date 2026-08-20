@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
 import math
 import os
 from pathlib import Path
+import random
 import subprocess
 import sys
 import tempfile
@@ -35,6 +37,8 @@ from development.statistical_feasibility.core import (
     Stage1Config,
     Stage2Config,
     stable_seed,
+    stage2_development_primary_bootstrap_seed,
+    stage2_generator_strata,
     stage1_arms,
     stage2_cells,
     stage2_trajectory_arms,
@@ -58,7 +62,8 @@ from development.statistical_feasibility.run import (
     aggregate_stage2_delta,
     build_stage2_control_work_units,
     build_stage2_primary_work_units,
-    bootstrap_stage2_delta_lower,
+    _iter_stage2_primary_bootstrap_worlds,
+    bootstrap_stage2_primary_statistics,
     classify_stage2_development,
     empirical_gamma_nc,
     effective_upper_bound,
@@ -67,10 +72,10 @@ from development.statistical_feasibility.run import (
     retain_stage1_trace,
     run_ppi_stage1,
     run_stage2_preflight,
-    pooled_empty_rate_cluster_lower,
     main as run_main,
     simulate_named_audit,
     stage2_manifest,
+    stage2_primary_map_manifest,
     stage2_preflight_plan,
     stage2_replay_replicate,
     stage2_structural_representation_complete,
@@ -1021,9 +1026,16 @@ class Stage2LeanExecutionTests(unittest.TestCase):
     def test_71_preflight_plan_is_exactly_the_frozen_stage2_configuration(self):
         config = Stage2Config()
         plan = stage2_preflight_plan(config)
-        self.assertEqual(plan["configuration"], {
-            key: value for key, value in config.__dict__.items()
-        })
+        expected = {
+            key: value
+            for key, value in config.__dict__.items()
+            if key != "bootstrap_master_seed"
+        }
+        expected["bootstrap_master_seed_status"] = "reserved_not_consumed"
+        expected["development_primary_bootstrap_seed"] = (
+            stage2_development_primary_bootstrap_seed(config)
+        )
+        self.assertEqual(plan["configuration"], expected)
         self.assertEqual(plan["negative_control_calibration"]["replicates_per_control"], 200)
         self.assertEqual(plan["additional_control_preflight"]["replicates_per_control"], 5)
         self.assertEqual(
@@ -1250,42 +1262,141 @@ class Stage2LeanExecutionTests(unittest.TestCase):
         self.assertEqual(result["bootstrap_replicates"], 1)
         self.assertEqual(len(result["class_bootstrap_q_0_975"]), 4)
 
-    def test_81_empty_rate_cluster_diagnostic_and_hold_gate(self):
-        records = [
-            {
-                "p_jde_target": .03,
-                "pi_H": .5,
-                "replicate_id": replicate,
-                "empty_confidence_set": replicate == 0,
-            }
-            for replicate in range(20)
-            for _ in range(4)
-        ]
-        diagnostic = pooled_empty_rate_cluster_lower(records, 1234, 100)
-        self.assertEqual(diagnostic["cluster_count"], 20)
-        self.assertAlmostEqual(diagnostic["pooled_empty_rate"], .05)
+    def test_81_empty_rate_hold_gate_remains_separate_from_eligibility(self):
         summaries = summarize_stage2_cells(self._synthetic_stage2_records(True))
         self.assertEqual(
             classify_stage2_development(summaries, .01, .2, .051),
             "IMPLEMENTATION_FAILURE_HOLD",
         )
 
-    def test_82_primary_delta_bootstrap_preserves_all_eligible_epsilon_cells(self):
+    def test_82_primary_bootstrap_uses_twelve_canonical_generator_strata(self):
+        config = Stage2Config()
+        worlds = list(_iter_stage2_primary_bootstrap_worlds(config, 2))
+        self.assertEqual(len(worlds), 2)
+        expected_strata = tuple(
+            sorted(
+                (p_jde, pi_h)
+                for p_jde in config.p_jde_targets
+                for pi_h in config.pi_h_values
+            )
+        )
+        self.assertEqual(stage2_generator_strata(config), expected_strata)
+        self.assertEqual(
+            tuple(stratum for stratum, _ in worlds[0].stratum_indices),
+            expected_strata,
+        )
+        self.assertTrue(
+            all(len(indices) == config.replicates for _, indices in worlds[0].stratum_indices)
+        )
+        rng = random.Random(stage2_development_primary_bootstrap_seed(config))
+        expected_first = tuple(rng.randrange(config.replicates) for _ in range(config.replicates))
+        self.assertEqual(worlds[0].stratum_indices[0][1], expected_first)
+
+    def test_83_primary_bootstrap_preserves_nested_and_arm_pairing(self):
         records = self._synthetic_stage2_records(True)
         summaries = summarize_stage2_cells(records)
-        result = bootstrap_stage2_delta_lower(
-            records, summaries, 9981, bootstrap_replicates=3
+        result = bootstrap_stage2_primary_statistics(
+            records, summaries, _bounded_bootstrap_replicates=3
         )
         self.assertEqual(result["status"], "INTERPRETABLE")
         self.assertAlmostEqual(result["Delta_bar"], .2)
         self.assertAlmostEqual(result["Delta_bar_minus"], .2)
-        with self.assertRaises(ValueError):
-            bootstrap_stage2_delta_lower(
-                records,
-                summaries,
-                Stage2Config().bootstrap_master_seed,
-                bootstrap_replicates=1,
+        self.assertEqual(result["generator_stratum_count"], 12)
+        self.assertTrue(result["shared_delta_and_pooled_empty_worlds"])
+        self.assertEqual(len(result["eligible_cell_ids"]), 144)
+        self.assertEqual(result["pooled_empty_rate"], 0.0)
+
+    def test_84_primary_bootstrap_freezes_point_eligibility_mask(self):
+        records = self._synthetic_stage2_records(True)
+        summaries = summarize_stage2_cells(records)
+        omitted = [
+            row
+            for row in summaries
+            if row["p_jde_target"] == .003 and row["B"] == 50 and row["pi_H"] == 0.0
+        ]
+        self.assertEqual(len(omitted), 3)
+        for row in omitted:
+            row["eligible"] = False
+            row["Delta_cell"] = None
+        result = bootstrap_stage2_primary_statistics(
+            records, summaries, _bounded_bootstrap_replicates=2
+        )
+        self.assertEqual(result["status"], "INCONCLUSIVE_BY_DEGENERACY")
+        self.assertIsNone(result["Delta_bar"])
+        self.assertTrue(
+            all(row["cell_id"] not in result["eligible_cell_ids"] for row in omitted)
+        )
+
+    def test_85_reserved_bootstrap_seed_cannot_change_development_bootstrap(self):
+        records = self._synthetic_stage2_records(True)
+        summaries = summarize_stage2_cells(records)
+        first_config = Stage2Config()
+        second_config = Stage2Config(
+            bootstrap_master_seed=first_config.bootstrap_master_seed + 997
+        )
+        first = bootstrap_stage2_primary_statistics(
+            records, summaries, first_config, _bounded_bootstrap_replicates=2
+        )
+        second = bootstrap_stage2_primary_statistics(
+            records, summaries, second_config, _bounded_bootstrap_replicates=2
+        )
+        self.assertEqual(
+            json.dumps(first, sort_keys=True, separators=(",", ":")),
+            json.dumps(second, sort_keys=True, separators=(",", ":")),
+        )
+        self.assertNotIn(
+            "seed", inspect.signature(bootstrap_stage2_primary_statistics).parameters
+        )
+
+    def test_86_primary_manifest_omits_reserved_seed_value(self):
+        config = Stage2Config()
+        changed = Stage2Config(bootstrap_master_seed=config.bootstrap_master_seed + 997)
+        normalization = Stage2MarginCalibration(3.1, 3.2, .99, 100)
+        calibrations = {
+            stratum: Stage2GeneratorParameters(stratum[0], stratum[1], 2.8, 0.0, "primary")
+            for stratum in stage2_generator_strata(config)
+        }
+        first = stage2_primary_map_manifest(config, normalization, calibrations, 2, {"head": "abc"})
+        second = stage2_primary_map_manifest(changed, normalization, calibrations, 2, {"head": "abc"})
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first["seed_namespaces"]["confirmatory_bootstrap"],
+            "reserved_not_consumed",
+        )
+        self.assertEqual(first["primary_bootstrap"]["generator_stratum_count"], 12)
+
+    def test_87_primary_cli_exposes_only_execution_controls(self):
+        output_directory = Path(tempfile.gettempdir()) / "stage2-primary-cli-test-output"
+        with mock.patch(
+            "development.statistical_feasibility.run.run_stage2_primary_map",
+            return_value={"mode": "stage2_primary_map"},
+        ) as primary:
+            self.assertEqual(
+                run_main(
+                    [
+                        "--stage2-primary-map",
+                        "--workers",
+                        "2",
+                        "--output-dir",
+                        str(output_directory),
+                    ]
+                ),
+                0,
             )
+        self.assertEqual(primary.call_args.args, (output_directory, 2))
+        with self.assertRaises(SystemExit) as scientific_knob:
+            run_main(
+                [
+                    "--stage2-primary-map",
+                    "--workers",
+                    "2",
+                    "--output-dir",
+                    str(output_directory),
+                    "--p-jde",
+                    "0.03",
+                ]
+            )
+        self.assertEqual(scientific_knob.exception.code, 2)
 
 
 if __name__ == "__main__":

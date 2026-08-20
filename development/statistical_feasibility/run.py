@@ -44,6 +44,8 @@ from .core import (
     development_arms,
     digest_rows,
     stable_seed,
+    stage2_development_primary_bootstrap_seed,
+    stage2_generator_strata,
     stage1_arms,
     stage2_cells,
     stage2_trajectory_arms,
@@ -1088,7 +1090,7 @@ def _stage1_mixture_result(audit: Mapping[str, object], population: NamedFiniteP
     }
 
 
-STAGE2_CODE_VERSION = "phase1g-ppi-stage2-lean-v5"
+STAGE2_CODE_VERSION = "phase1h-ppi-stage2-primary-map-v1"
 
 STAGE2_PREFLIGHT_MARGIN_REPLICATES = 3
 STAGE2_PREFLIGHT_NEGATIVE_CONTROL_REPLICATES = 200
@@ -1627,42 +1629,47 @@ def clopper_pearson_upper(
     return high
 
 
-def pooled_empty_rate_cluster_lower(
-    records: Sequence[Mapping[str, object]],
-    development_bootstrap_seed: int,
-    bootstrap_replicates: int = 10_000,
-) -> dict:
-    """Cluster-bootstrap the pooled empty rate by immutable population identity."""
+@dataclass(frozen=True)
+class Stage2PrimaryBootstrapWorld:
+    """One resampled development world, indexed only by generator stratum."""
 
-    if not records or bootstrap_replicates <= 0:
-        raise ValueError("pooled empty-rate bootstrap inputs are invalid")
-    clusters: Dict[Tuple[float, float, int], List[bool]] = {}
-    for row in records:
-        key = (
-            float(row["p_jde_target"]),
-            float(row["pi_H"]),
-            int(row["replicate_id"]),
+    bootstrap_replicate: int
+    stratum_indices: Tuple[Tuple[Tuple[float, float], Tuple[int, ...]], ...]
+
+    def indices_for(self, p_jde_target: float, pi_h: float) -> Tuple[int, ...]:
+        key = (float(p_jde_target), float(pi_h))
+        for stratum, indices in self.stratum_indices:
+            if stratum == key:
+                return indices
+        raise KeyError(f"unknown Stage 2 bootstrap generator stratum: {key}")
+
+
+def _iter_stage2_primary_bootstrap_worlds(
+    config: Stage2Config,
+    bootstrap_replicates: int,
+) -> Iterator[Stage2PrimaryBootstrapWorld]:
+    """Yield the single authoritative primary-bootstrap RNG stream.
+
+    The replicate-count argument is private and exists only for bounded tests.
+    The public execution path always supplies the frozen 10,000 count.
+    """
+
+    config.validate()
+    if bootstrap_replicates <= 0:
+        raise ValueError("primary bootstrap replicate count must be positive")
+    rng = random.Random(stage2_development_primary_bootstrap_seed(config))
+    strata = stage2_generator_strata(config)
+    for bootstrap_replicate in range(bootstrap_replicates):
+        yield Stage2PrimaryBootstrapWorld(
+            bootstrap_replicate,
+            tuple(
+                (
+                    stratum,
+                    tuple(rng.randrange(config.replicates) for _ in range(config.replicates)),
+                )
+                for stratum in strata
+            ),
         )
-        clusters.setdefault(key, []).append(bool(row["empty_confidence_set"]))
-    ordered = [clusters[key] for key in sorted(clusters)]
-    observed = math.fsum(math.fsum(cluster) for cluster in ordered) / math.fsum(
-        len(cluster) for cluster in ordered
-    )
-    rng = random.Random(development_bootstrap_seed)
-    boot = []
-    for _ in range(bootstrap_replicates):
-        sampled = [ordered[rng.randrange(len(ordered))] for _ in ordered]
-        boot.append(
-            math.fsum(math.fsum(cluster) for cluster in sampled)
-            / math.fsum(len(cluster) for cluster in sampled)
-        )
-    lower = type7_percentile(boot, 0.05)
-    return {
-        "pooled_empty_rate": observed,
-        "cluster_bootstrap_95_lower": lower,
-        "cluster_count": len(ordered),
-        "bootstrap_replicates": bootstrap_replicates,
-    }
 
 
 def summarize_stage2_cells(
@@ -1874,78 +1881,156 @@ def stage2_structural_representation_complete(
     return represented == expected
 
 
-def bootstrap_stage2_delta_lower(
+def bootstrap_stage2_primary_statistics(
     records: Sequence[Mapping[str, object]],
     cell_summaries: Sequence[Mapping[str, object]],
-    development_bootstrap_seed: int,
     config: Stage2Config | None = None,
-    bootstrap_replicates: int = 10_000,
+    *,
+    _bounded_bootstrap_replicates: Optional[int] = None,
 ) -> dict:
-    """Population-cluster lower limit for the equally weighted eligible Delta."""
+    """Bootstrap Delta and pooled empties from the same 12-stratum worlds.
+
+    Eligibility is consumed as a point-estimate mask and never recomputed.  The
+    private bounded override supports unit fixtures only; normal execution is
+    fixed to ``config.primary_bootstrap_replicates``.
+    """
 
     config = config or Stage2Config()
     config.validate()
-    if development_bootstrap_seed == config.bootstrap_master_seed:
-        raise ValueError("confirmatory bootstrap namespace is forbidden in development")
-    if not stage2_structural_representation_complete(cell_summaries, config):
-        return {
+    bootstrap_replicates = (
+        config.primary_bootstrap_replicates
+        if _bounded_bootstrap_replicates is None
+        else _bounded_bootstrap_replicates
+    )
+    if bootstrap_replicates <= 0:
+        raise ValueError("primary bootstrap replicate count must be positive")
+    if len(cell_summaries) != len(stage2_cells(config)):
+        raise ValueError("Stage 2 bootstrap requires the complete 144-cell summary")
+
+    eligible = tuple(row for row in cell_summaries if bool(row["eligible"]))
+    eligibility_mask = tuple(str(row["cell_id"]) for row in eligible)
+    interpretable = stage2_structural_representation_complete(cell_summaries, config)
+
+    primary_records = [row for row in records if row["control_id"] == "primary"]
+    clusters: Dict[Tuple[float, float, int], List[Mapping[str, object]]] = {}
+    for row in primary_records:
+        key = (
+            float(row["p_jde_target"]),
+            float(row["pi_H"]),
+            int(row["replicate_id"]),
+        )
+        clusters.setdefault(key, []).append(row)
+    expected_cluster_count = len(stage2_generator_strata(config)) * config.replicates
+    if len(clusters) != expected_cluster_count:
+        raise InvalidDevelopmentRun("primary bootstrap population clusters are incomplete")
+
+    cluster_empty_counts: Dict[Tuple[float, float], Tuple[int, ...]] = {}
+    cluster_row_counts: Dict[Tuple[float, float], Tuple[int, ...]] = {}
+    for stratum in stage2_generator_strata(config):
+        stratum_clusters = [clusters[(stratum[0], stratum[1], r)] for r in range(config.replicates)]
+        cluster_empty_counts[stratum] = tuple(
+            sum(bool(row["empty_confidence_set"]) for row in cluster)
+            for cluster in stratum_clusters
+        )
+        cluster_row_counts[stratum] = tuple(len(cluster) for cluster in stratum_clusters)
+
+    observed_empty = math.fsum(
+        math.fsum(values) for values in cluster_empty_counts.values()
+    ) / math.fsum(math.fsum(values) for values in cluster_row_counts.values())
+
+    cell_vectors = []
+    if interpretable:
+        for cell in eligible:
+            stratum = (float(cell["p_jde_target"]), float(cell["pi_H"]))
+            budget = int(cell["B"])
+            epsilon = float(cell["epsilon_samp"])
+            up_by_replicate: List[Optional[float]] = [None] * config.replicates
+            sp_by_replicate: List[Optional[float]] = [None] * config.replicates
+            for row in primary_records:
+                if (
+                    float(row["p_jde_target"]) != stratum[0]
+                    or float(row["pi_H"]) != stratum[1]
+                    or int(row["B"]) != budget
+                ):
+                    continue
+                replicate = int(row["replicate_id"])
+                if row["conceptual_arm"] == "UP":
+                    up_by_replicate[replicate] = effective_upper_bound(row)
+                elif (
+                    row["conceptual_arm"] == "SP"
+                    and float(row["epsilon_samp"]) == epsilon
+                ):
+                    sp_by_replicate[replicate] = effective_upper_bound(row)
+            if any(value is None for value in (*up_by_replicate, *sp_by_replicate)):
+                raise InvalidDevelopmentRun("eligible Delta bootstrap cell is incomplete")
+            cell_vectors.append(
+                (
+                    stratum,
+                    tuple(float(value) for value in up_by_replicate),
+                    tuple(float(value) for value in sp_by_replicate),
+                )
+            )
+
+    delta_bootstrap: List[float] = []
+    empty_bootstrap: List[float] = []
+    world_digest = hashlib.sha256()
+    for world in _iter_stage2_primary_bootstrap_worlds(config, bootstrap_replicates):
+        world_digest.update(
+            _canonical_json_bytes(
+                {
+                    "bootstrap_replicate": world.bootstrap_replicate,
+                    "strata": [
+                        [list(stratum), list(indices)]
+                        for stratum, indices in world.stratum_indices
+                    ],
+                }
+            )
+        )
+        selected_empty = 0
+        selected_rows = 0
+        for stratum in stage2_generator_strata(config):
+            indices = world.indices_for(*stratum)
+            empty_counts = cluster_empty_counts[stratum]
+            row_counts = cluster_row_counts[stratum]
+            selected_empty += sum(empty_counts[index] for index in indices)
+            selected_rows += sum(row_counts[index] for index in indices)
+        empty_bootstrap.append(selected_empty / selected_rows)
+        if interpretable:
+            cell_deltas = []
+            for stratum, up, sp in cell_vectors:
+                indices = world.indices_for(*stratum)
+                mean_up = math.fsum(up[index] for index in indices) / len(indices)
+                mean_sp = math.fsum(sp[index] for index in indices) / len(indices)
+                if mean_up <= 0.0:
+                    raise InvalidDevelopmentRun("primary bootstrap Delta denominator is zero")
+                cell_deltas.append(1.0 - mean_sp / mean_up)
+            delta_bootstrap.append(math.fsum(cell_deltas) / len(cell_deltas))
+
+    result = {
+        "development_primary_bootstrap_seed": stage2_development_primary_bootstrap_seed(config),
+        "bootstrap_replicates": bootstrap_replicates,
+        "percentile_type": 7,
+        "generator_strata": [list(stratum) for stratum in stage2_generator_strata(config)],
+        "generator_stratum_count": len(stage2_generator_strata(config)),
+        "resampling_unit": "generated_population_replicate",
+        "shared_delta_and_pooled_empty_worlds": True,
+        "bootstrap_world_digest": world_digest.hexdigest(),
+        "eligibility_mask_source": "frozen_point_estimate_cell_summaries",
+        "eligible_cell_ids": list(eligibility_mask),
+        "pooled_empty_rate": observed_empty,
+        "pooled_empty_cluster_bootstrap_95_lower": type7_percentile(empty_bootstrap, 0.05),
+        "cluster_count": expected_cluster_count,
+    }
+    if not interpretable:
+        return result | {
             "Delta_bar": None,
             "Delta_bar_minus": None,
             "status": "INCONCLUSIVE_BY_DEGENERACY",
         }
-    eligible = [row for row in cell_summaries if bool(row["eligible"])]
-    cell_vectors = []
-    for cell in eligible:
-        up_rows = sorted(
-            (
-                row
-                for row in records
-                if row["p_jde_target"] == cell["p_jde_target"]
-                and row["pi_H"] == cell["pi_H"]
-                and row["B"] == cell["B"]
-                and row["conceptual_arm"] == "UP"
-                and row["control_id"] == "primary"
-            ),
-            key=lambda row: int(row["replicate_id"]),
-        )
-        sp_rows = sorted(
-            (
-                row
-                for row in records
-                if row["p_jde_target"] == cell["p_jde_target"]
-                and row["pi_H"] == cell["pi_H"]
-                and row["B"] == cell["B"]
-                and row["conceptual_arm"] == "SP"
-                and row["epsilon_samp"] == cell["epsilon_samp"]
-                and row["control_id"] == "primary"
-            ),
-            key=lambda row: int(row["replicate_id"]),
-        )
-        if len(up_rows) != config.replicates or len(sp_rows) != config.replicates:
-            raise InvalidDevelopmentRun("eligible Delta bootstrap cell is incomplete")
-        cell_vectors.append(
-            (
-                tuple(effective_upper_bound(row) for row in up_rows),
-                tuple(effective_upper_bound(row) for row in sp_rows),
-            )
-        )
-    point = aggregate_stage2_delta(cell_summaries)
-    rng = random.Random(development_bootstrap_seed)
-    boot = []
-    for _ in range(bootstrap_replicates):
-        indices = [rng.randrange(config.replicates) for _ in range(config.replicates)]
-        deltas = []
-        for up, sp in cell_vectors:
-            mean_up = math.fsum(up[index] for index in indices) / len(indices)
-            mean_sp = math.fsum(sp[index] for index in indices) / len(indices)
-            deltas.append(1.0 - mean_sp / mean_up)
-        boot.append(math.fsum(deltas) / len(deltas))
-    return {
-        "Delta_bar": point,
-        "Delta_bar_minus": type7_percentile(boot, 0.05),
+    return result | {
+        "Delta_bar": aggregate_stage2_delta(cell_summaries),
+        "Delta_bar_minus": type7_percentile(delta_bootstrap, 0.05),
         "status": "INTERPRETABLE",
-        "bootstrap_replicates": bootstrap_replicates,
-        "percentile_type": 7,
     }
 
 
@@ -1973,7 +2058,7 @@ def stage2_manifest(
         "code_version": STAGE2_CODE_VERSION,
         "manifest_type": config.manifest_type,
         "development_only": True,
-        "configuration": asdict(config),
+        "configuration": _stage2_development_configuration(config),
         "margin_normalization": asdict(normalization),
         "risk_calibrations": [
             {
@@ -1990,7 +2075,8 @@ def stage2_manifest(
             "negative_control_calibration": config.negative_control_master_seed,
             "negative_control_bootstrap": config.negative_control_bootstrap_seed,
             "evaluation": config.evaluation_master_seed,
-            "bootstrap": config.bootstrap_master_seed,
+            "development_primary_bootstrap": stage2_development_primary_bootstrap_seed(config),
+            "confirmatory_bootstrap": "reserved_not_consumed",
             "disjoint": True,
         },
         "worker_count": workers,
@@ -2009,6 +2095,83 @@ def stage2_manifest(
     }
 
 
+def _stage2_development_configuration(config: Stage2Config) -> dict:
+    """Serialize development configuration without exposing the reserved seed."""
+
+    configuration = {
+        name: getattr(config, name)
+        for name in config.__dataclass_fields__
+        if name != "bootstrap_master_seed"
+    }
+    configuration["bootstrap_master_seed_status"] = "reserved_not_consumed"
+    configuration["development_primary_bootstrap_seed"] = (
+        stage2_development_primary_bootstrap_seed(config)
+    )
+    return configuration
+
+
+def stage2_primary_map_manifest(
+    config: Stage2Config,
+    normalization: Stage2MarginCalibration,
+    calibrations: Mapping[Tuple[float, float], Stage2GeneratorParameters],
+    workers: int,
+    provenance: Mapping[str, object],
+) -> dict:
+    """Frozen, development-only manifest for the public primary-map path."""
+
+    config.validate()
+    if workers <= 0:
+        raise ValueError("Stage 2 primary-map worker count must be positive")
+    expected = set(stage2_generator_strata(config))
+    if set(calibrations) != expected:
+        raise ValueError("Stage 2 primary-map calibration map is incomplete")
+    return {
+        "schema_version": "ppi-stage2-primary-map-v1",
+        "code_version": STAGE2_CODE_VERSION,
+        "manifest_type": config.manifest_type,
+        "development_only": True,
+        "confirmatory_manifest": False,
+        "configuration": _stage2_development_configuration(config),
+        "margin_normalization": asdict(normalization),
+        "risk_calibrations": [
+            {"p_jde_target": key[0], "pi_H": key[1], **asdict(calibrations[key])}
+            for key in sorted(calibrations)
+        ],
+        "gamma_NC": config.gamma_nc,
+        "tau_NC": config.tau_nc,
+        "git_provenance": dict(provenance),
+        "environment": _execution_environment(),
+        "seed_namespaces": {
+            "calibration": config.calibration_master_seed,
+            "evaluation": config.evaluation_master_seed,
+            "development_primary_bootstrap": stage2_development_primary_bootstrap_seed(config),
+            "confirmatory_bootstrap": "reserved_not_consumed",
+        },
+        "primary_bootstrap": {
+            "generator_strata": [list(stratum) for stratum in stage2_generator_strata(config)],
+            "generator_stratum_count": 12,
+            "interpretation_stratum_count": 48,
+            "replicates": config.primary_bootstrap_replicates,
+            "rng": "random.Random",
+            "draw_primitive": "randrange",
+            "eligibility_mask": "frozen_from_point_estimate_summaries",
+            "shared_delta_and_pooled_empty_worlds": True,
+        },
+        "worker_count": workers,
+        "worker_count_is_execution_only": True,
+        "nested_budget_rule": "one B=500 trajectory; report prefixes 50,100,200,500",
+        "replay_selection_rule": {
+            "p_jde_target": 3e-3,
+            "pi_H": 0.75,
+            "B": 500,
+            "paired_arms": ["UP", "SP"],
+            "SP_epsilon_samp": 0.2,
+            "replicate_id": stage2_replay_replicate(config),
+            "selection_is_outcome_independent": True,
+        },
+    }
+
+
 def stage2_preflight_plan(config: Stage2Config | None = None) -> dict:
     """Return the frozen, development-only control-preflight plan.
 
@@ -2020,7 +2183,7 @@ def stage2_preflight_plan(config: Stage2Config | None = None) -> dict:
     config.validate()
     return {
         "manifest_type": "development_only_stage2_control_preflight",
-        "configuration": asdict(config),
+        "configuration": _stage2_development_configuration(config),
         "margin_calibration": {
             "replicates": STAGE2_PREFLIGHT_MARGIN_REPLICATES,
             "seed_namespace": "margin_and_risk_calibration",
@@ -2494,7 +2657,7 @@ def write_stage2_execution_artifacts(
         "schema_version": "ppi-stage2-replay-v1",
         "notice": DEVELOPMENT_ONLY_NOTICE,
         "code_version": STAGE2_CODE_VERSION,
-        "configuration": asdict(config),
+        "configuration": _stage2_development_configuration(config),
         "lambda_grid_digest": _lambda_grid_digest(config.lambda_grid),
         "transformation_bank": {
             "bank_id": frozen_transformation_bank().bank_id,
@@ -2531,6 +2694,100 @@ def write_stage2_execution_artifacts(
         "manifest_path": str(manifest_path),
         "manifest_size_bytes": len(manifest_bytes),
         "manifest_sha256": _sha256_bytes(manifest_bytes),
+    }
+
+
+def run_stage2_primary_map(output_directory: Path, workers: int) -> dict:
+    """Execute the frozen development primary map through the supported CLI.
+
+    This is deliberately not called by tests or preflight.  It is the sole
+    public path that consumes the Stage 2 evaluation namespace.
+    """
+
+    config = Stage2Config()
+    config.validate()
+    if workers <= 0:
+        raise ValueError("Stage 2 primary-map worker count must be positive")
+    _ensure_external_output(output_directory, _repository_root())
+    provenance = inspect_git_provenance(_repository_root())
+    if not provenance.get("head"):
+        raise InvalidDevelopmentRun("Stage 2 primary map requires resolvable Git provenance")
+
+    started = time.perf_counter()
+    normalization, _ = _stage2_margin_calibration(config)
+    calibrations, _ = _stage2_risk_calibrations(normalization, config)
+    calibration_seconds = time.perf_counter() - started
+
+    units = build_stage2_primary_work_units(calibrations, normalization, config)
+    evaluation_started = time.perf_counter()
+    results = execute_stage2_work_units(units, workers)
+    evaluation_seconds = time.perf_counter() - evaluation_started
+    records = [row for result in results for row in result["rows"]]
+    summaries = summarize_stage2_cells(records, config)
+
+    bootstrap_started = time.perf_counter()
+    bootstrap = bootstrap_stage2_primary_statistics(records, summaries, config)
+    bootstrap_seconds = time.perf_counter() - bootstrap_started
+    classification = classify_stage2_development(
+        summaries,
+        config.gamma_nc,
+        bootstrap["Delta_bar_minus"],
+        bootstrap["pooled_empty_cluster_bootstrap_95_lower"],
+        config,
+    )
+    manifest = stage2_primary_map_manifest(
+        config, normalization, calibrations, workers, provenance
+    )
+    report = {
+        "schema_version": "ppi-stage2-primary-map-report-v1",
+        "development_only": True,
+        "classification": classification,
+        "gamma_NC": config.gamma_nc,
+        "tau_NC": config.tau_nc,
+        "cell_count": len(summaries),
+        "scientific_stratum_count": 48,
+        "structural_representation_complete": stage2_structural_representation_complete(
+            summaries, config
+        ),
+        "bootstrap": bootstrap,
+        "phase_runtimes_seconds": {
+            "calibration": calibration_seconds,
+            "evaluation": evaluation_seconds,
+            "primary_bootstrap": bootstrap_seconds,
+            "total_before_artifact_write": time.perf_counter() - started,
+        },
+        "confirmatory": False,
+    }
+    artifacts = write_stage2_execution_artifacts(
+        output_directory, results, manifest, config
+    )
+    map_path = output_directory / "stage2_feasibility_map.json"
+    report_path = output_directory / "stage2_primary_map_report.json"
+    if map_path.exists() or report_path.exists():
+        raise FileExistsError("Stage 2 primary-map summary artifact already exists")
+    map_bytes = _canonical_json_bytes({"cells": summaries})
+    report_bytes = _canonical_json_bytes(report)
+    map_path.write_bytes(map_bytes)
+    report_path.write_bytes(report_bytes)
+    artifacts.update(
+        {
+            "feasibility_map_path": str(map_path),
+            "feasibility_map_size_bytes": len(map_bytes),
+            "feasibility_map_sha256": _sha256_bytes(map_bytes),
+            "report_path": str(report_path),
+            "report_size_bytes": len(report_bytes),
+            "report_sha256": _sha256_bytes(report_bytes),
+        }
+    )
+    return {
+        "mode": "stage2_primary_map",
+        "development_only": True,
+        "classification": classification,
+        "cell_count": len(summaries),
+        "population_count": len(units),
+        "gamma_NC": config.gamma_nc,
+        "bootstrap": bootstrap,
+        "artifacts": artifacts,
     }
 
 
@@ -3228,6 +3485,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--stage2-primary-map",
+        action="store_true",
+        help=(
+            "run the frozen development-only 144-cell Stage 2 primary map; "
+            "scientific parameters are not exposed as CLI options"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -3243,7 +3508,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--workers",
         type=int,
         default=None,
-        help="required positive process count for --stage2-preflight only",
+        help="required positive process count for Stage 2 execution modes only",
     )
     args = parser.parse_args(argv)
     selected_modes = sum(
@@ -3252,16 +3517,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.smoke,
             args.ppi_stage1,
             args.stage2_preflight,
+            args.stage2_primary_map,
             args.replay_artifact,
         )
     )
     if selected_modes != 1:
         parser.error(
             "choose exactly one of --smoke, --ppi-stage1, --stage2-preflight, "
-            "or --replay-artifact"
+            "--stage2-primary-map, or --replay-artifact"
         )
-    if args.workers is not None and not args.stage2_preflight:
-        parser.error("--workers is supported only with --stage2-preflight")
+    if args.workers is not None and not (
+        args.stage2_preflight or args.stage2_primary_map
+    ):
+        parser.error("--workers is supported only with Stage 2 execution modes")
     if args.replay_artifact:
         try:
             result = replay_artifact(args.replay_artifact)
@@ -3302,6 +3570,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ValueError,
         ) as error:
             print(f"INVALID STAGE 2 PREFLIGHT: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True, indent=2))
+        return 0
+    if args.stage2_primary_map:
+        if args.output_dir is None:
+            parser.error("--stage2-primary-map requires --output-dir outside the repository")
+        if args.workers is None or args.workers <= 0:
+            parser.error("--stage2-primary-map requires --workers with a positive value")
+        print(DEVELOPMENT_ONLY_NOTICE)
+        print(
+            "Stage 2 primary-map execution is development-only; it uses the frozen "
+            "144-cell design and does not execute confirmatory work."
+        )
+        try:
+            result = run_stage2_primary_map(args.output_dir, args.workers)
+        except (
+            InvalidDevelopmentRun,
+            ControlledNumericalFailure,
+            OSError,
+            ValueError,
+        ) as error:
+            print(f"INVALID STAGE 2 PRIMARY MAP: {error}", file=sys.stderr)
             return 2
         print(json.dumps(result, sort_keys=True, indent=2))
         return 0
