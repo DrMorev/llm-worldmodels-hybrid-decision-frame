@@ -310,3 +310,30 @@ real-world semantic invariance, and no Stage 1 output is evidence that PPI is
 useful or that directed auditing is superior. The prevalence-1 boundary fixture
 is retained for Stage 1 mechanics only; it is not an accepted Stage 2
 maximally-favourable feasibility cell.
+
+## Stage 2 specification repair
+
+Stage 2 uses `pi_H in {0, 0.5, 0.75}`. The `0.75` point is a
+high-fragility reference condition, not a mathematical maximum, and no evidence
+claim is made for complete shared fragility. Empty confidence sets retain their
+raw null bound, `empty_confidence_set` status, and false coverage indicator; a
+separate `effective_upper_bound=1.0` is used in every Stage 2 Delta and negative-
+control aggregation. Non-empty valid records use their raw numeric bound.
+
+Negative controls are `pi_h_zero`, `constant_ppi`,
+`conditional_permuted_ppi`, and `global_permuted_ppi`. The conditional control
+retains observable strata and tests incremental PPI information. The global
+control permutes the complete observable PPI multiset without strata or hidden
+outcomes. For each class, G is formed per epsilon/budget cell as a ratio of
+means. A 10,000-replicate population-block bootstrap reuses one population
+index vector across all 12 cells, uses the deterministic type-7 percentile, and
+derives its seed only from the negative-control namespace. The project scalar
+`gamma_NC` is the maximum class 97.5th percentile and is invalid if above the
+pre-execution `tau_NC=0.05`.
+
+Primary-cell eligibility uses coverage in both arms, a non-vacuous mean
+effective UP bound, and the zero-event ceiling. Empty rates remain explicit
+diagnostics. Aggregate Delta is suppressed as `INCONCLUSIVE_BY_DEGENERACY`
+unless each of the 48 `(p_JDE, B, pi_H)` strata has at least one eligible
+epsilon. These rules are development-only and establish neither PPI usefulness
+nor confirmatory readiness.
