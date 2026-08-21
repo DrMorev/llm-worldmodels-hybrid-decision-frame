@@ -776,33 +776,31 @@ Additional confirmatory proxies, if retained, are secondary.
 
 ### Development primary candidate
 
-The sole designated development primary-proxy candidate is:
+The sole designated development primary-proxy candidate was:
 
 `paired_perturbation_instability`
 
-It is not yet frozen as the confirmatory primary proxy.
-
-It may enter the preregistration only after passing the accepted development feasibility gate specified in section 53.
+It did not pass the accepted development preregistration-advancement gate specified in section 53 and was never frozen as the confirmatory primary proxy. It does not advance in this phase.
 
 ### Other candidates
 
 * `evidence_path_overlap` is excluded from the current experiment and retained only as a possible post-release architecture-specific candidate requiring a separate GO.
-* `confidence_floor_margin` is retained as a cheap confirmatory baseline, not as a second primary proxy.
+* `confidence_floor_margin` was retained as a cheap development baseline, not as a second primary proxy.
 
 ### Comparisons
 
-Primary planned contrast:
+Primary development contrast:
 
 * SP vs UP.
 
-Confirmatory secondary contrasts:
+The planned confirmatory secondary contrasts, which were never entered because the project did not enter preregistration, were:
 
 * SP vs SM;
 * UP vs UM.
 
-The two confirmatory secondary contrasts use preregistered Holm correction.
+Had the project entered preregistration, the two confirmatory secondary contrasts would have used preregistered Holm correction.
 
-All other contrasts are descriptive unless promoted before preregistration through a recorded decision.
+All other C-03 contrasts remain descriptive. No contrast may now be promoted into an official C-03 aggregate or confirmatory result.
 
 Multiple-comparison rule
 
@@ -818,7 +816,7 @@ It cannot determine the primary conclusion.
 
 ### Reversal condition
 
-The primary proxy may change only before preregistration approval.
+There is no reversal within this phase before release and freeze. Any later proxy-development programme requires a separate explicit post-release PI GO and a new prospective design identity.
 
 ---
 
@@ -1915,7 +1913,7 @@ A new audit finding, a reproducibility failure, or evidence that the accepted im
 
 ## 52. Current project status
 
-**Status:** TESTED DEVELOPMENT PROTOTYPE; PREREGISTRATION NOT YET APPROVED
+**Status:** C-03 DEVELOPMENT-TERMINAL OUTCOME; PREREGISTRATION NOT ENTERED
 
 ### Established
 
@@ -1924,6 +1922,9 @@ A new audit finding, a reproducibility failure, or evidence that the accepted im
 * A development-only statistical feasibility prototype is merged at `0aaf49c86dabe42bc04ff5e3d05049c952250577`.
 * The prototype has 29 independently reproduced tests and passed the final bounded implementation audit.
 * The replay boundary and its lack of cryptographic authenticity are documented accurately.
+* C-03 executed the frozen Stage 2 development map at `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`.
+* The exact C-03 classification is `INCONCLUSIVE_BY_DEGENERACY`.
+* PPI did not satisfy the prospective conditions required to advance into preregistration and does not advance in this phase.
 
 ### Not established
 
@@ -1933,6 +1934,7 @@ A new audit finding, a reproducibility failure, or evidence that the accepted im
 * That development parameters are suitable for preregistration.
 * That the method transfers to a real domain.
 * That the repository is release-ready or scientifically novel.
+* Any confirmatory result: no confirmatory preregistration was committed and no confirmatory run occurred.
 
 ---
 
@@ -2402,28 +2404,16 @@ Any replacement proxy requires a new recorded decision before implementation.
 
 ### Current authorized next stage
 
-Synchronize this accepted method contract into the canonical repository.
-
-After the synchronization is merged, the next possible stage is a separately authorized, bounded, development-only implementation task for:
-
-* structural PPI generator plumbing;
-* frozen transformation bank;
-* confidence-margin baseline;
-* five arms;
-* common equal-weight lambda mixture;
-* compact development artifacts;
-* replay-grade selected traces;
-* mandatory negative controls;
-* Stage 1 plumbing validation.
+Synchronize the C-03 development-terminal governance contract, complete an independent terminal-development result audit, prepare release-facing documentation and immutable external archival evidence, and then seek separate release authorization.
 
 ### Not authorized by the register itself
 
 The register does not itself authorize:
 
-* implementation;
-* Stage 1 execution;
-* Stage 2 execution;
-* full development sweep;
+* a C-03 rerun;
+* modification of E1, E2, E3, the 48-of-48 rule, `gamma_NC`, `tau_NC`, or the frozen Stage 2 grid;
+* an unofficial aggregate over the 108 eligible cells;
+* PPI rescue, retuning, PPI-2, or replacement proxy search;
 * preregistration;
 * confirmatory manifest creation;
 * confirmatory execution;
@@ -2433,3 +2423,74 @@ The register does not itself authorize:
 * push;
 * merge;
 * release.
+
+---
+
+## 55. C-03 development-terminal phase decision
+
+### Decision
+
+The selected PPI development path terminated at C-03 because the prospectively defined 48-of-48 structural-representation gate prevented the development aggregate from being defined. The downstream scientific advancement test `Delta_bar_minus > gamma_NC` was therefore not reached.
+
+This phase ends as **development-stage termination after failure of the preregistration-advancement gate**. The terminal machine classification remains exactly:
+
+`INCONCLUSIVE_BY_DEGENERACY`
+
+C-03 was development-only. No confirmatory preregistration was committed, no confirmatory run occurred, and C-03 is not confirmatory evidence. It is not an invalid run and is not reclassified as `NEGATIVE`. `Delta_bar` and `Delta_bar_minus` remain undefined/null. No unofficial aggregate over the 108 eligible cells is authorized.
+
+PPI failed to satisfy the prospective conditions required to advance into preregistration and therefore does not advance. The repository may release this development-stage outcome without pretending that preregistration or confirmatory execution occurred.
+
+No new PPI proxy search, rescue, retuning, grid revision, or replacement primary proxy is authorized in this repository before release and freeze. Any further proxy-development programme requires a separate explicit post-release PI GO and a new prospective design identity. Existing confirmatory requirements remain fully binding for any future phase that actually enters preregistration.
+
+### Descriptive development evidence
+
+The C-03 execution identity is Git head `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`. It produced 2,400 populations and 144 cells across 48 scientific strata. There were 108 eligible cells and 36 ineligible cells; 36 of 48 scientific strata were represented and 12 were unrepresented.
+
+All 36 ineligible cells failed solely `zero_event_proportion_above_0.50`. The 12 unrepresented strata were:
+
+* `p_JDE = 0.01`, `B = 50`, all `pi_H`;
+* `p_JDE = 0.003`, `B in {50, 100, 200}`, all `pi_H`.
+
+Among the 108 eligible cells, `Delta_cell` was negative in 97, positive in 11, and zero in 0. Its descriptive distribution was: mean `-1.3933676212689903`, median `-1.3402708473419773`, minimum `-4.814389234158471`, and maximum `0.015690285931822645`.
+
+Empty confidence sets across all 144 cells were 0 for UP and 271 for SP. The pooled observed empty-confidence-set rate was `0.00474537037037037`; its pooled cluster-bootstrap one-sided 95% lower limit was `0.004027777777777778`. The frozen negative-control values were `gamma_NC = 0.014751154135125344` and `tau_NC = 0.05`.
+
+These quantities are descriptive development evidence only. They do not define or replace the official endpoint. The eligible portion of the map is descriptively adverse to the PPI path. The concentration of empty confidence sets in SP is consistent with variance inflation in the implemented importance-weighted, score-informed sampling procedure. It does not prove that directed sampling in general fails, that low-prevalence directed sampling always causes variance inflation, or that C-03 establishes a general theory of directed auditing.
+
+### Evidence publication contract
+
+Large raw C-03 JSON artifacts must not be committed directly into Git. Repository-facing release evidence must contain or reference the feasibility map, manifest, primary report, runner stdout/stderr, a SHA-256 manifest for all scientific artifacts, and reproduction instructions.
+
+The complete unchanged C-03 evidence ZIP is intended for immutable external archival publication, with Zenodo as the intended archival surface. Its SHA-256 is `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610`. Before final release, the archive must be externally versioned and immutable and its final DOI or reference must be inserted into release-facing documentation. No DOI, Zenodo record ID, GitHub Release URL, or publication date is asserted by this decision.
+
+### Future decision-reachability control
+
+Before any future expensive evidence-producing experimental design is frozen or executed after a separately authorized post-release GO, the Project Manager must ensure that decision reachability and operating characteristics have been assessed prospectively for the exact design. The control asks: assuming the scientific method is correct, can the exact proposed design reach its own decision rule with informative data?
+
+Use the cheapest sufficient analysis: elementary arithmetic or analytic sanity checks first, exact finite calculations where required, and bounded prospective simulation only when simpler analysis is insufficient. This function diagnoses informativeness; it must not maximize the probability of a positive result, remove difficult regimes merely to improve reachability, weaken validity safeguards, or alter the design after protected target evidence is observed. It is not a new permanent project role, and C-03 does not prospectively validate it.
+
+### Rationale
+
+The frozen C-03 rules were applied as specified. Retaining the exact development classification and terminating before preregistration preserves prospective discipline, avoids result-dependent rescue, and permits an honest release of the state actually reached.
+
+### Rejected alternatives
+
+The following are rejected for this phase:
+
+* post-C-03 modification or weakening of E3;
+* removal of low-prevalence or low-budget cells;
+* weakening the 48-of-48 structural-representation rule;
+* best-epsilon selection;
+* another evaluation seed or C-03 rerun;
+* calculation of an unofficial aggregate over the 108 eligible cells;
+* immediate PPI-2 or replacement-proxy search;
+* describing C-03 as confirmatory;
+* reclassifying C-03 as invalid or negative.
+
+### Uncertainty
+
+C-03 does not determine whether a differently designed future experiment could produce an informative or favourable PPI result. It establishes only that this frozen development design did not satisfy its prospective advancement conditions. The descriptive adverse pattern does not replace the undefined aggregate endpoint.
+
+### Reversal condition
+
+Before release and freeze, none. After release, further proxy development requires a separate explicit PI GO, a new prospective design identity, prospective decision-reachability review, and full compliance with any confirmatory requirements of that future phase.
