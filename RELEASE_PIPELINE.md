@@ -17,17 +17,22 @@ This pipeline does not authorize implementation or Git operations by itself.
 * Stage 2 calibration, negative-control gate, execution machinery, and bootstrap closure;
 * C-03 execution at `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`;
 * exact C-03 classification `INCONCLUSIVE_BY_DEGENERACY`;
-* termination of the PPI development path before preregistration.
+* termination of the PPI development path before preregistration;
+* C-04 canonical terminal-contract amendment at audited head `5e448d306976567b1e456512317c26f64bc18c0a`;
+* independent terminal-development audit verdict `PASS`;
+* Project Manager and independent-auditor reconciliation `MATCH — NO MATERIAL DISAGREEMENT`;
+* ordinary merge of PR #10 into `main` at `2f7aa988cb0f607def899f789ba5f846cb4f21ba`;
+* focused release-positioning related-work review.
 
 ### In progress
 
-* synchronization of the C-03 development-terminal governance and release contract.
+* release-facing documentation and public reproduction/evidence surface.
 
 ### Next gate
 
-* independent terminal-development result audit;
-* release-facing documentation and immutable external archival publication of C-03 evidence;
-* separate release authorization, immutable tag, and repository freeze.
+* immutable external archival publication of C-03 evidence and insertion of its final archival reference;
+* release-readiness verification;
+* separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
 
 PPI usefulness has not been demonstrated and PPI does not advance. No confirmatory preregistration was committed and no confirmatory run occurred. C-03 is development evidence, not an invalid run, confirmatory result, or official negative result.
 
@@ -1120,9 +1125,9 @@ For C-03, Path B preserves `INCONCLUSIVE_BY_DEGENERACY`, undefined/null `Delta_b
 
 ## 37. Current authorized next step
 
-1. Complete and merge the C-03 canonical development-terminal contract synchronization.
-2. Obtain an independent terminal-development result audit under Path B.
-3. Reconcile the Project Manager and independent-auditor conclusions without changing the frozen C-03 rules or classification.
-4. Prepare release-facing documentation and immutable external archival evidence, then seek separate release authorization.
+1. Complete and merge the release-facing documentation and public reproduction/evidence surface.
+2. Publish the unchanged C-03 evidence through an immutable external archive and insert its final archival identifier or reference.
+3. Complete release-readiness verification.
+4. Seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
 
 This pipeline does not itself authorize a C-03 rerun, PPI rescue or replacement, grid revision, E3 or 48-of-48 weakening, an unofficial 108-cell aggregate, preregistration, confirmatory implementation or execution, repository rename, root README replacement, commit, push, merge, release, or continuation after freeze.

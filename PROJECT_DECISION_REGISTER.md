@@ -1925,6 +1925,10 @@ A new audit finding, a reproducibility failure, or evidence that the accepted im
 * C-03 executed the frozen Stage 2 development map at `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`.
 * The exact C-03 classification is `INCONCLUSIVE_BY_DEGENERACY`.
 * PPI did not satisfy the prospective conditions required to advance into preregistration and does not advance in this phase.
+* The canonical terminal-contract amendment at `5e448d306976567b1e456512317c26f64bc18c0a` passed independent terminal-development audit.
+* Project Manager and independent-auditor reconciliation was `MATCH — NO MATERIAL DISAGREEMENT`.
+* PR #10 merged the audited amendment into `main` at `2f7aa988cb0f607def899f789ba5f846cb4f21ba`.
+* Focused release-positioning related-work review is complete and does not support broad novelty claims.
 
 ### Not established
 
@@ -2404,7 +2408,7 @@ Any replacement proxy requires a new recorded decision before implementation.
 
 ### Current authorized next stage
 
-Synchronize the C-03 development-terminal governance contract, complete an independent terminal-development result audit, prepare release-facing documentation and immutable external archival evidence, and then seek separate release authorization.
+Prepare release-facing documentation and the public reproduction/evidence surface, complete immutable external archival publication of the C-03 evidence, insert its final archival reference, verify release readiness, and then seek separate authorization for repository rename, release, tag, and freeze.
 
 ### Not authorized by the register itself
 
@@ -2494,3 +2498,55 @@ C-03 does not determine whether a differently designed future experiment could p
 ### Reversal condition
 
 Before release and freeze, none. After release, further proxy development requires a separate explicit PI GO, a new prospective design identity, prospective decision-reachability review, and full compliance with any confirmatory requirements of that future phase.
+
+## 56. Release contribution and claim boundary
+
+### Decision
+
+The completed release-positioning related-work review does not support a broad novelty claim.
+
+The public release must not claim:
+
+* a novel statistical method;
+* a new general theory of verifier independence;
+* firstness for verifier qualification;
+* novelty of correlated-error or common-mode concerns;
+* novelty of standard operating-characteristics or decision-reachability analysis.
+
+The repository may describe its narrower contribution as:
+
+* specialization of existing finite-population auditing machinery to the joint dangerous-error estimand for a synthetic primary/verifier pair inside a confident-agreement population;
+* a fixed-oracle-budget research artifact;
+* a reproducible development-terminal case study;
+* a method-transfer stress test;
+* a documented case in which a prospectively frozen structural gate terminated the selected development path before preregistration.
+
+C-03 did not establish official aggregate superiority or inferiority of directed auditing. `INCONCLUSIVE_BY_DEGENERACY` remains the exact terminal scientific class.
+
+Public documentation must distinguish the repository-internal paired perturbation-instability terminology from prediction-powered inference.
+
+Related-work wording must explicitly credit inherited machinery and must not treat citation of prior work as validation of this repository.
+
+### Rationale
+
+Broad component claims are substantially represented in prior literature, whereas the repository's defensible value is narrower and lies in the exact specialization, implemented artifact, development evidence, and preserved failure path.
+
+### Alternatives rejected
+
+* broad novelty claim;
+* firstness claim;
+* describing C-03 as an official negative result;
+* describing the method transfer as invention of the source machinery;
+* omitting related-work qualification from the public release.
+
+### Uncertainty
+
+The bounded review does not prove that no closer work exists.
+
+Absence of an identified exact predecessor is not a firstness claim.
+
+### Reversal condition
+
+A stronger novelty claim requires materially new external evidence or later post-release scientific evidence, together with a new explicit PI decision.
+
+Discovery of materially closer prior work may further narrow, but may not silently strengthen, the public claim.
