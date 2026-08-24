@@ -1056,6 +1056,82 @@ Closed when every project-relevant review records:
 
 ---
 
+## AF-18 — Stage 2 lacked a separate prospective decision-reachability check
+
+### Finding class
+
+PROCESS / EXPERIMENTAL-DESIGN INFORMATIVENESS
+
+### Severity
+
+MATERIAL PROCESS FINDING
+
+### Status
+
+CURRENT-PHASE FINDING / RETROSPECTIVE LESSON / PROCEDURAL CORRECTION REQUIRED FOR FUTURE DESIGNS
+
+### Observed condition
+
+The Stage 2 workflow rigorously reviewed method validity, implementation correctness, replayability, seed isolation, eligibility semantics, and post-hoc discretion, but did not separately perform a prospective operating-characteristics or decision-reachability analysis of the exact frozen grid before C-03 execution.
+
+The missing question was:
+
+Assuming the specification and implementation are correct, can this exact design generate enough information to reach its own downstream decision rule?
+
+This is not classified as an implementation defect, estimator-validity defect, or statistical coverage failure.
+
+### Dominant mechanism
+
+The decision-reachability risk arose from the interaction of:
+
+* rare joint-dangerous-error prevalence;
+* small oracle budget;
+* the E3 zero-event guard on the uniform baseline;
+* the all-or-nothing 48-of-48 structural-representation rule.
+
+For a baseline sample of size `B` with event prevalence `p`, the elementary prospective diagnostic is:
+
+```text
+P(zero events) approximately equals (1 - p)^B
+```
+
+or its exact finite-population analogue.
+
+This calculation would have identified the following region as prospectively high risk for E3 exclusion and therefore degeneracy-prone before C-03:
+
+* `p_JDE = 0.01`, `B = 50`;
+* `p_JDE = 0.003`, `B = 50`;
+* `p_JDE = 0.003`, `B = 100`;
+* `p_JDE = 0.003`, `B = 200`.
+
+For `p_JDE = 0.003`, `B = 200`, the expected zero-event probability is near the 0.50 gate, so finite-replicate classification is itself boundary-sensitive. This does not mean passage was mathematically impossible.
+
+### Consequence
+
+Because every one of the 48 `(p_JDE, B, pi_H)` scientific strata required at least one eligible epsilon, upstream E3 failure prevented the experiment from reaching the downstream aggregate advancement criterion. C-03 therefore remained `INCONCLUSIVE_BY_DEGENERACY`, with `Delta_bar` and `Delta_bar_minus` undefined/null.
+
+### Evidence boundary
+
+This finding was identified after C-03 evidence existed. It is a retrospective lesson demonstrating that the failure mechanism was prospectively detectable. It is not prospective validation of a new reviewer, gate, role, or execution contour for C-03.
+
+### Current disposition
+
+No C-03 rerun, current-design rescue, retrospective grid repair, weakening of E3, weakening of the 48-of-48 rule, or replacement aggregate is authorized.
+
+For any future expensive evidence-producing design after a separate post-release GO, method validity and design informativeness must be treated as separate review surfaces. Before design freeze or execution, the Project Manager must ensure that the exact design's decision reachability and operating characteristics are assessed using elementary arithmetic first, exact finite calculations where required, and bounded prospective simulation only when simpler analysis is insufficient.
+
+This is a required function when triggered, not a new permanent project role or named reviewer identity. Its purpose is diagnosis, not optimization toward a positive result.
+
+### Closure criterion
+
+For the current phase, the finding is preserved as a terminal retrospective lesson and does not authorize corrective execution. For a future separately authorized design, closure requires a prospective, evidence-independent decision-reachability record completed before protected target evidence is observed.
+
+### Preserved S2-02 non-blocking finding
+
+The audited non-blocking S2-02 finding concerning disjointness of the reserved confirmatory bootstrap seed is not marked fixed. No observed code change in this documentation-only task repairs it. Because this phase does not enter confirmatory work, the finding is not on the active development-terminal execution path; it remains relevant to any future phase that enters preregistration or confirmatory execution.
+
+---
+
 Seven propositions that must not be resurrected
 
 The first five are the canonicalized withdrawn propositions from the latest methodological round.
@@ -1414,9 +1490,9 @@ The audits establish implementation conformance for the bounded development prot
 * real-domain validity;
 * verifier qualification.
 
-## Current disposition of historical findings
+## Current disposition of findings
 
-| Finding | Current disposition after Phase 1B |
+| Finding | Current disposition |
 |---|---|
 | AF-01 Broken latency file | Retired; migration note pending |
 | AF-02 Unsupported approximately 70 ms result | Withdrawn; migration note pending |
@@ -1435,26 +1511,14 @@ The audits establish implementation conformance for the bounded development prot
 | AF-15 Unsafe unverified fallback | Retained as a negative architectural rule; no such fallback exists in Phase 1B |
 | AF-16 Position-defending review brief | Preventive neutral-review control adopted and followed in Phase 1B |
 | AF-17 Invisible review track | Review-visibility control adopted and followed in Phase 1B |
+| AF-18 Missing prospective decision-reachability check | Retrospective lesson; no C-03 rescue; future expensive designs require a separate prospective informativeness check |
 
-The repository is not release-ready. The root README, migration note, preregistration, development CI, confirmatory result, independent result classification, tag, and freeze remain outstanding.
+The repository is not yet release-ready. For the development-terminal route, the root README, migration note, independent terminal-development result audit, release documentation, immutable external C-03 archive reference, tag, and freeze remain outstanding. Preregistration and a confirmatory result do not exist for this phase and are not prerequisites of the authorized development-terminal route.
 
 ## Current authorized next step
 
-Neutral proxy review has produced one designated development primary-proxy candidate: `paired_perturbation_instability`.
+C-03 terminated the PPI development path with exact classification `INCONCLUSIVE_BY_DEGENERACY`. PPI usefulness remains unproven and PPI does not advance.
 
-PPI usefulness remains unproven. The method contract is a specification, not evidence that the proxy improves audit allocation or that directed auditing outperforms uniform auditing.
+The next authorized governance sequence is canonical synchronization, independent terminal-development result audit, release-facing documentation, immutable external evidence publication, and a separate release decision.
 
-After canonical synchronization, the next possible stage is a separately authorized, bounded, development-only implementation task.
-
-Mandatory development controls include:
-
-* proxy-field isolation;
-* structural transformation invariance;
-* equal-weight lambda-mixture coverage;
-* null-mechanism controls;
-* permutation and constant-score controls;
-* stable shared-false-belief falsification.
-
-No implementation-dependent finding is closed by adoption of the method contract.
-
-This register does not authorize development implementation, confirmatory implementation, confirmatory execution, preregistration approval, repository rename, deletion of the historical root README, public release, commit, push, or merge by itself.
+This register does not authorize a C-03 rerun, PPI rescue or replacement, E3 or 48-of-48 weakening, an unofficial 108-cell aggregate, preregistration, confirmatory implementation or execution, public release, commit, push, or merge by itself.

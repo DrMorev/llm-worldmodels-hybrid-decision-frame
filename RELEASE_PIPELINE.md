@@ -12,27 +12,24 @@ This pipeline does not authorize implementation or Git operations by itself.
 
 ### Completed
 
-* Phase 0 repository snapshot and historical baseline reconstruction;
-* Phase 1B development-only statistical feasibility implementation;
-* three independent Phase 1B implementation-audit rounds;
-* ordinary merge of PR #3 at `0aaf49c86dabe42bc04ff5e3d05049c952250577`;
-* installation and ordinary merge of the four canonical repository documents through PR #4 at `18aaa46c3dab99978f01707d7784624d761669ac`;
-* comparative proxy review and methodological adjudication;
-* designation of `paired_perturbation_instability` as the sole development primary candidate;
-* exclusion of `evidence_path_overlap` from the current experiment;
-* retention of confidence margin as the cheap baseline.
+* canonical method contract and development implementation;
+* Stage 1 plumbing and independent implementation audit;
+* Stage 2 calibration, negative-control gate, execution machinery, and bootstrap closure;
+* C-03 execution at `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`;
+* exact C-03 classification `INCONCLUSIVE_BY_DEGENERACY`;
+* termination of the PPI development path before preregistration.
 
 ### In progress
 
-* synchronization of the accepted PPI development method contract into the canonical repository documents.
+* synchronization of the C-03 development-terminal governance and release contract.
 
 ### Next gate
 
-* merge the exact method-contract synchronization;
-* issue a separate bounded development-only implementation authorization;
-* implement and validate Stage 1 plumbing before any Stage 2 feasibility sweep or preregistration drafting.
+* independent terminal-development result audit;
+* release-facing documentation and immutable external archival publication of C-03 evidence;
+* separate release authorization, immutable tag, and repository freeze.
 
-PPI usefulness has not been demonstrated. The primary proxy has not been frozen for confirmatory use. No confirmatory implementation or execution is authorized.
+PPI usefulness has not been demonstrated and PPI does not advance. No confirmatory preregistration was committed and no confirmatory run occurred. C-03 is development evidence, not an invalid run, confirmatory result, or official negative result.
 
 The merged Phase 1B prototype is development machinery. It is not the confirmatory implementation and does not satisfy the preregistration, CI, confirmatory-run, release, or freeze gates.
 
@@ -40,21 +37,17 @@ The merged Phase 1B prototype is development machinery. It is not the confirmato
 
 ## 1. Pipeline objective
 
-The current project phase must produce:
+The current project phase must terminate through exactly one of two mutually exclusive routes.
 
-1. one approved and committed preregistration;
-2. one bounded synthetic experiment;
-3. one reproducible confirmatory result or documented invalid run;
-4. one independent blind result audit;
-5. one public tagged release;
-6. one repository freeze.
+### Path A — Confirmatory terminal route
 
-The release must occur whether the result is:
+When the project enters preregistration, Path A requires one approved and committed preregistration, one bounded confirmatory experiment or documented invalid run, one independent blind result audit, classification reconciliation, one public tagged release, and one repository freeze. All preregistration, confirmatory-seed isolation, deviation, review-independence, and claim controls remain binding.
 
-* positive;
-* negative;
-* inconclusive;
-* invalid.
+### Path B — Development-terminal route
+
+Path B applies only when a prospectively defined development advancement gate prevents entry into preregistration. It requires exact development execution and immutable evidence identity, explicit development classification, an explicit statement that no confirmatory result exists, Project Manager terminal interpretation, independent terminal-development result audit, reconciliation, release documentation, immutable archival evidence reference, tagged release, and repository freeze.
+
+C-03 follows Path B with exact classification `INCONCLUSIVE_BY_DEGENERACY`. It is not reclassified as invalid or negative, and no confirmatory result is fabricated.
 
 An unfavourable result is not a reason to:
 
@@ -785,6 +778,8 @@ It does not authorize silent repair and continuation.
 
 ## 26. Project Manager result classification
 
+Sections 26 through 28 govern Path A after confirmatory artifacts exist. They do not convert a Path-B development classification into a confirmatory result.
+
 After the confirmatory artifacts are complete, the Project Manager assigns a preliminary result class from preregistered rules.
 
 ### Positive
@@ -883,24 +878,39 @@ A disagreement may lead to an invalid or inconclusive release if the protocol do
 
 ## 29. Release gate
 
-Release requires:
+Release requires accepted canonical documents, reproducible evidence identity, final limitations, security and license checks, approved README, migration note, release notes, immutable tag, and completion of exactly one route-specific gate.
 
-* accepted canonical documents;
+### Path A gate
+
+Path A additionally requires:
+
 * committed preregistration;
 * passing development CI;
 * completed confirmatory run or documented invalid run;
-* reproducible result artifacts;
 * completed deviation log;
-* Project Manager classification;
-* independent auditor classification;
-* classification reconciliation;
-* final limitations;
-* security scan;
-* license check;
-* approved README;
-* migration note;
-* release notes;
-* immutable tag.
+* Project Manager confirmatory classification;
+* independent blind result-auditor classification;
+* classification reconciliation.
+
+### Path B gate
+
+Path B additionally requires:
+
+* exact development execution identity;
+* immutable evidence identity and cryptographic hashes;
+* explicit development classification;
+* explicit statement that no confirmatory result exists;
+* Project Manager terminal interpretation;
+* independent terminal-development result audit;
+* reconciliation of Project Manager and independent auditor conclusions;
+* recorded reason why preregistration was not entered;
+* recorded governance amendment permitting Path B;
+* limitations and non-claims;
+* release documentation;
+* archival evidence reference;
+* immutable release tag and repository freeze.
+
+The independent Path-B audit is not called a confirmatory blind result audit. It independently checks exact C-03 artifact identity, application of the frozen development-classification rule, the structural-degeneracy trigger, descriptive arithmetic, claim/evidence boundaries, and absence of scientific rescue after C-03.
 
 Release does not require a favourable result.
 
@@ -912,7 +922,7 @@ The public repository must contain:
 
 * README;
 * project scope and non-goals;
-* preregistration;
+* preregistration for Path A, or the recorded reason preregistration was not entered for Path B;
 * methods;
 * experiment code;
 * tests;
@@ -928,11 +938,15 @@ The public repository must contain:
 * license;
 * release tag.
 
+For the C-03 Path-B release, large raw JSON artifacts must not be committed directly into Git. Repository-facing evidence must contain or reference the feasibility map, manifest, primary report, runner stdout/stderr, a SHA-256 manifest for all scientific artifacts, and reproduction instructions.
+
+The complete unchanged C-03 evidence ZIP, SHA-256 `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610`, must be externally versioned and immutable before final release. Zenodo is the intended archival surface. The final DOI or archival reference must then be inserted into release-facing documentation. This pipeline does not assert a DOI, Zenodo record ID, GitHub Release URL, or publication date before one is separately observed.
+
 The README must identify:
 
 * result class;
 * Project Manager/auditor disagreement, if any;
-* preregistration commit;
+* preregistration commit for Path A, or an explicit statement that no preregistration or confirmatory result exists for Path B;
 * implementation or release commit;
 * reproduction command;
 * validated scope;
@@ -1079,43 +1093,36 @@ Continuation requires:
 
 ## 36. Terminal state
 
-The phase is complete when:
+The phase is complete only after one mutually exclusive route is fully satisfied.
 
-1. the four canonical internal documents are accepted;
-2. the preregistration is committed;
-3. implementation is complete;
-4. development CI passes;
-5. the confirmatory run is completed or classified invalid;
-6. the Project Manager classification is recorded;
-7. the independent blind audit is completed;
-8. classification disagreement is resolved or disclosed;
-9. the release is tagged;
-10. temporary source files are safely removed;
-11. the repository is frozen.
+### Path A terminal state
+
+Path A is complete when the canonical documents and preregistration are committed, implementation and development CI pass, the confirmatory run is completed or classified invalid, Project Manager and independent blind classifications are recorded and reconciled, release evidence and deviations are published, the release is tagged, temporary source files are safely removed, and the repository is frozen.
+
+### Path B terminal state
+
+Path B is complete when:
+
+1. the four canonical documents record the development-terminal decision and route;
+2. exact development execution and evidence identities and cryptographic hashes are preserved;
+3. the Project Manager terminal interpretation is recorded;
+4. an independent terminal-development result audit verifies the frozen classification rule, structural-degeneracy trigger, descriptive arithmetic, evidence boundaries, and absence of post-result rescue;
+5. Project Manager and independent auditor conclusions are reconciled or their disagreement is disclosed;
+6. the absence of preregistration and confirmatory result is stated explicitly;
+7. limitations, non-claims, release documentation, and immutable archival evidence reference are complete;
+8. the release is tagged;
+9. temporary source files are safely removed;
+10. the repository is frozen.
+
+For C-03, Path B preserves `INCONCLUSIVE_BY_DEGENERACY`, undefined/null `Delta_bar` and `Delta_bar_minus`, and the prohibition on an unofficial aggregate over the 108 eligible cells.
 
 ---
 
 ## 37. Current authorized next step
 
-1. Complete and merge the canonical PPI development method-contract synchronization.
-2. After that merge, prepare one separately authorized bounded development-only implementation task covering only:
-   * structural PPI generator plumbing;
-   * frozen transformation bank;
-   * confidence-margin baseline;
-   * five development arms;
-   * common equal-weight lambda mixture;
-   * compact sweep summaries;
-   * bounded replay-grade traces;
-   * mandatory negative and falsification controls;
-   * Stage 1 plumbing validation.
-3. Review Stage 1 evidence before authorizing:
-   * Stage 2 development feasibility mapping;
-   * parameter calibration;
-   * proxy freeze;
-   * preregistration drafting.
-4. Draft the preregistration only after:
-   * the designated proxy passes its development gate;
-   * the method parameters required for preregistration are fixed through recorded decisions;
-   * a separate authorization is issued.
+1. Complete and merge the C-03 canonical development-terminal contract synchronization.
+2. Obtain an independent terminal-development result audit under Path B.
+3. Reconcile the Project Manager and independent-auditor conclusions without changing the frozen C-03 rules or classification.
+4. Prepare release-facing documentation and immutable external archival evidence, then seek separate release authorization.
 
-This pipeline does not itself authorize implementation, Stage 1 execution, Stage 2 execution, preregistration approval, confirmatory implementation, confirmatory execution, repository rename, replacement of the historical root README, creation or exposure of a confirmatory manifest, commit, push, merge, or release.
+This pipeline does not itself authorize a C-03 rerun, PPI rescue or replacement, grid revision, E3 or 48-of-48 weakening, an unofficial 108-cell aggregate, preregistration, confirmatory implementation or execution, repository rename, root README replacement, commit, push, merge, release, or continuation after freeze.

@@ -158,21 +158,21 @@ A proxy that cannot be implemented without hidden truth, privileged variables, o
 
 ## 7. Compared audit strategies
 
-All strategies will operate under the same preregistered oracle budget B.
+The development strategies operated under the frozen oracle-budget grid.
 
-The sole designated development primary-proxy candidate is:
+The sole designated development primary-proxy candidate was:
 
 `paired_perturbation_instability`
 
-It is not yet frozen as the confirmatory primary proxy. It may enter the preregistration only after passing the accepted development feasibility gate.
+It did not pass the accepted development preregistration-advancement gate and was never frozen as a confirmatory primary proxy. It does not advance in this phase.
 
-`confidence_floor_margin` is retained as a cheap confirmatory baseline, not as a second primary proxy.
+`confidence_floor_margin` was retained as a cheap development baseline, not as a second primary proxy.
 
 `evidence_path_overlap` is excluded from the current experiment. Any later use would require a separate post-release architecture-specific GO decision.
 
-The planned development comparison includes uniform and directed auditing within the agreement region, using the accepted anytime-valid statistical machinery. The primary planned contrast is PPI-informed sampling with PPI as a control variate against uniform sampling with PPI as a control variate. Confirmatory secondary contrasts, if retained after development, will use preregistered Holm correction.
+The frozen development comparison included uniform and directed auditing within the agreement region using the accepted anytime-valid statistical machinery. Its primary contrast was PPI-informed sampling with PPI as a control variate against uniform sampling with PPI as a control variate. The structural-representation gate prevented the aggregate advancement statistic from being defined.
 
-There will be one confirmatory primary proxy, fixed only through the later preregistration process.
+No confirmatory primary proxy exists for this phase. No replacement proxy is authorized before release and freeze.
 
 ---
 
@@ -188,7 +188,7 @@ The accepted development-method hierarchy is:
 
 At a fixed oracle budget, the conditional endpoint compares statistically valid upper confidence bounds on joint dangerous-error risk. Negative effects remain part of the analysis.
 
-Exact confirmatory numerical values remain to be fixed only after development evidence and preregistration. This document does not fix the practical threshold, evaluation size, sampling exploration weight, negative-control tolerance, lambda-grid values, oracle budget, or confirmatory cells.
+No confirmatory numerical values were fixed because the project did not enter preregistration. The frozen C-03 development values remain historical execution parameters and are not retroactively changed.
 
 The endpoint design must support:
 
@@ -396,15 +396,13 @@ Depending on the application, the acceptable response may instead be:
 
 ### Current repository state
 
-PR #3 was merged into `main` through ordinary merge commit `0aaf49c86dabe42bc04ff5e3d05049c952250577`.
+C-03 executed the frozen Stage 2 development feasibility map at Git head `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`.
 
-The accepted Phase 1B implementation head is `a3d486e987d43063ba271cfe5f095f0f9a4b9545`.
+Its exact development classification is `INCONCLUSIVE_BY_DEGENERACY`. The prospective 48-of-48 structural-representation gate was not satisfied, so `Delta_bar` and `Delta_bar_minus` remain undefined/null and no unofficial aggregate over the 108 eligible cells is authorized.
 
-That merge added a development-only statistical feasibility prototype with independently audited replay, sampling, control-variate, betting-bound, and reporting machinery.
+C-03 was development-only. It was not an invalid run, it is not reclassified as negative, no confirmatory preregistration was committed, and no confirmatory run occurred. PPI did not satisfy the prospective conditions required to advance into preregistration and therefore does not advance in this phase.
 
-The merge does not establish scientific usefulness, confirmatory validity, verifier qualification, or a release-ready public identity.
-
-The historical root README and repository name remain temporary migration surfaces until the preregistration and release-facing structure are approved.
+The repository may release this development-stage terminal outcome with explicit non-claims and immutable evidence references. The historical root README and repository name remain temporary migration surfaces until that release-facing structure is approved.
 
 ---
 
@@ -560,6 +558,22 @@ until:
 
 Coverage testing before authorization must use development scenarios only.
 
+### Future decision-reachability control
+
+Before any future expensive evidence-producing experimental design is frozen or executed after a separately authorized post-release GO, the Project Manager must ensure that decision reachability and operating characteristics have been assessed prospectively for the exact design.
+
+The required question is:
+
+Assuming the scientific method is correct, can the exact proposed design reach its own decision rule with informative data?
+
+Use the cheapest sufficient analysis in this order:
+
+1. elementary arithmetic and analytic sanity checks;
+2. exact finite calculations where required;
+3. bounded prospective simulation only when simpler analysis is insufficient.
+
+This function is diagnostic, not an optimization mandate. It must not maximize the probability of a positive result, remove difficult scientific regimes merely to improve reachability, weaken validity safeguards, or alter a design after protected target evidence is observed. It is a required function when triggered, not a new permanent project role, and C-03 does not prospectively validate it.
+
 ---
 
 ## 23. Possible outcomes
@@ -608,6 +622,12 @@ The scientific claim is withdrawn.
 
 The repository may still be released as a documented methodological case study.
 
+Development-terminal result
+
+A prospectively defined development advancement gate may prevent the project from entering preregistration. In that case, the exact development classification and evidence identity are preserved, no confirmatory result is claimed, an independent terminal-development result audit is completed, and the repository may release and freeze through the development-terminal route defined in the Release Pipeline.
+
+For C-03, the exact class is `INCONCLUSIVE_BY_DEGENERACY`. It is not confirmatory evidence, an invalid run, or an official negative result.
+
 ---
 
 ## 24. Current non-claims
@@ -630,24 +650,12 @@ The project has not yet shown that:
 
 ## 25. Terminal state
 
-The current project phase ends after:
+The current project phase ends through exactly one of two mutually exclusive terminal routes:
 
-1. the canonical internal documents are approved;
-2. the preregistration is approved and committed;
-3. confirmatory implementation is completed;
-4. development CI passes;
-5. the confirmatory run is executed;
-6. the result is independently classified and audited;
-7. the repository is released with an immutable tag;
-8. temporary source files are safely removed;
-9. the repository is frozen.
+* a confirmatory route that preserves preregistration, confirmatory isolation, independent blind result audit, classification reconciliation, immutable release, and freeze;
+* a development-terminal route used only when a prospectively defined development advancement gate prevents entry into preregistration.
 
-The release occurs whether the result is:
-
-* positive;
-* negative;
-* inconclusive;
-* invalid.
+C-03 follows the development-terminal route. That route requires exact evidence identity and hashes, explicit development classification, an explicit statement that no confirmatory result exists, Project Manager terminal interpretation, independent terminal-development result audit, reconciliation, release documentation, immutable archival evidence reference, release tag, and repository freeze.
 
 Further development requires a separate explicit GO decision.
 
@@ -657,9 +665,9 @@ A positive result does not automatically authorize continuation.
 
 ## 26. Current direction decision
 
-Proceed with the bounded release direction:
+Proceed to release and freeze the exact C-03 development-stage terminal outcome without entering preregistration or confirmatory execution.
 
-Conduct one preregistered synthetic experiment in the existing repository, release the result regardless of outcome, and then freeze the repository.
+The official classification remains `INCONCLUSIVE_BY_DEGENERACY`. PPI does not advance. No replacement primary proxy, PPI rescue, retuning, grid revision, or new proxy-development loop is authorized in this repository before release and freeze.
 
 Do not expand before that release into:
 
@@ -676,18 +684,15 @@ Do not expand before that release into:
 
 ## 27. Current authorized next step
 
-`paired_perturbation_instability` is the sole designated development primary-proxy candidate. It is not yet frozen for confirmatory use.
-
-The current action is synchronization of the accepted PPI development method contract into the canonical repository documents.
-
-After that synchronization is merged, any bounded development-only implementation requires a separate explicit authorization.
+Synchronize the C-03 development-terminal governance contract, obtain an independent terminal-development result audit, prepare release-facing documentation and immutable external archival evidence, then seek separate release authorization.
 
 This document does not authorize:
 
-* development implementation or execution;
+* a C-03 rerun;
+* PPI rescue, retuning, grid revision, PPI-2, or replacement proxy search;
+* calculation of `Delta_bar`, `Delta_bar_minus`, or an unofficial 108-cell aggregate;
+* preregistration;
 * confirmatory implementation;
 * confirmatory execution;
-* repository rename;
-* replacement of the historical root README;
 * creation or exposure of a confirmatory manifest;
 * public release.
