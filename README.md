@@ -175,12 +175,16 @@ This repository establishes none of the following:
 |---|---|
 | C-03 scientific execution head | `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4` |
 | C-03 evidence ZIP SHA-256 | `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610` |
+| C-03 Zenodo record | [https://zenodo.org/records/22081466](https://zenodo.org/records/22081466) |
+| C-03 version DOI | [10.5281/zenodo.22081466](https://doi.org/10.5281/zenodo.22081466) |
+| C-03 all-versions DOI | [10.5281/zenodo.22081465](https://doi.org/10.5281/zenodo.22081465) |
+| C-03 archive publication date | `2026-08-24` |
 | C-04 canonical-amendment audited head | `5e448d306976567b1e456512317c26f64bc18c0a` |
 | Independent terminal-development audit | `PASS` |
 | PM/auditor reconciliation | `MATCH — NO MATERIAL DISAGREEMENT` |
 | PR #10 merge commit / R-01 base | `2f7aa988cb0f607def899f789ba5f846cb4f21ba` |
 
-The complete C-03 archive has not yet been published through an immutable external archive. No DOI, Zenodo record, release URL, or release tag is asserted here.
+The unchanged C-03 evidence package is archived on Zenodo as Dataset version C-03. The version-specific DOI identifies this immutable evidence version; the concept DOI identifies the Zenodo version series. This archival publication does not assert a GitHub release or release tag.
 
 ## Migration
 
@@ -190,6 +194,6 @@ The GitHub repository slug remains `llm-worldmodels-hybrid-decision-frame` in th
 
 ## Citation / license
 
-Archival citation information will be added after immutable release archive publication.
+Morev, Sergey. (2026). *Audit the Verifier - C-03 Development Evidence Package* (Version C-03) [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.22081466
 
 The code and documentation are provided under the existing [MIT License](LICENSE).

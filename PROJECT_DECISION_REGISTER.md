@@ -2408,7 +2408,7 @@ Any replacement proxy requires a new recorded decision before implementation.
 
 ### Current authorized next stage
 
-Prepare release-facing documentation and the public reproduction/evidence surface, complete immutable external archival publication of the C-03 evidence, insert its final archival reference, verify release readiness, and then seek separate authorization for repository rename, release, tag, and freeze.
+Complete release-readiness verification, then seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze. The unchanged C-03 evidence package is archived on Zenodo with version-specific DOI `10.5281/zenodo.22081466`.
 
 ### Not authorized by the register itself
 

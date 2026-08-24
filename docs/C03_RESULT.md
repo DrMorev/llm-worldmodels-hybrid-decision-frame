@@ -92,6 +92,18 @@ This was an independent repository/evidence audit, not scholarly peer review.
 
 ## Archive status
 
-Pending immutable external archival publication.
+**PUBLISHED**
 
-The complete unchanged C-03 ZIP is intended to be published through an immutable external archive. No DOI, Zenodo record, GitHub release URL, release tag, or publication date exists in this note.
+| Field | Value |
+|---|---|
+| Zenodo record | [https://zenodo.org/records/22081466](https://zenodo.org/records/22081466) |
+| Version-specific DOI | [10.5281/zenodo.22081466](https://doi.org/10.5281/zenodo.22081466) |
+| All-versions DOI | [10.5281/zenodo.22081465](https://doi.org/10.5281/zenodo.22081465) |
+| Publication date | `2026-08-24` |
+| Resource type | Dataset |
+| Version | C-03 |
+| Creator | Sergey Morev |
+| Archive filename | `C03_STAGE2_PRIMARY_MAP_4225b49c.zip` |
+| SHA-256 | `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610` |
+
+The Zenodo record archives the development evidence object. Archival publication does not alter the scientific classification and is not scholarly peer review. It does not assert a GitHub release URL or release tag.
