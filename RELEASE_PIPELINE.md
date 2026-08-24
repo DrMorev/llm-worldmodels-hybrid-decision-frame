@@ -23,15 +23,15 @@ This pipeline does not authorize implementation or Git operations by itself.
 * Project Manager and independent-auditor reconciliation `MATCH — NO MATERIAL DISAGREEMENT`;
 * ordinary merge of PR #10 into `main` at `2f7aa988cb0f607def899f789ba5f846cb4f21ba`;
 * focused release-positioning related-work review.
+* release-facing documentation and public reproduction/evidence surface merged through PR #11 into `main` at `b375d7cb98ae16d6eece9d4d44cb049aba11788e`;
+* immutable external archival publication of the unchanged C-03 evidence package on Zenodo as Dataset version C-03, with version-specific DOI `10.5281/zenodo.22081466`.
 
 ### In progress
 
-* release-facing documentation and public reproduction/evidence surface.
+* release-readiness verification.
 
 ### Next gate
 
-* immutable external archival publication of C-03 evidence and insertion of its final archival reference;
-* release-readiness verification;
 * separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
 
 PPI usefulness has not been demonstrated and PPI does not advance. No confirmatory preregistration was committed and no confirmatory run occurred. C-03 is development evidence, not an invalid run, confirmatory result, or official negative result.
@@ -945,7 +945,7 @@ The public repository must contain:
 
 For the C-03 Path-B release, large raw JSON artifacts must not be committed directly into Git. Repository-facing evidence must contain or reference the feasibility map, manifest, primary report, runner stdout/stderr, a SHA-256 manifest for all scientific artifacts, and reproduction instructions.
 
-The complete unchanged C-03 evidence ZIP, SHA-256 `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610`, must be externally versioned and immutable before final release. Zenodo is the intended archival surface. The final DOI or archival reference must then be inserted into release-facing documentation. This pipeline does not assert a DOI, Zenodo record ID, GitHub Release URL, or publication date before one is separately observed.
+The complete unchanged C-03 evidence ZIP, SHA-256 `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610`, is archived on Zenodo as Dataset version C-03 at `https://zenodo.org/records/22081466`. Its version-specific DOI is `10.5281/zenodo.22081466`; its all-versions DOI is `10.5281/zenodo.22081465`; and its publication date is `2026-08-24`. This archival publication does not assert a GitHub Release URL or release tag.
 
 The README must identify:
 
@@ -1125,9 +1125,7 @@ For C-03, Path B preserves `INCONCLUSIVE_BY_DEGENERACY`, undefined/null `Delta_b
 
 ## 37. Current authorized next step
 
-1. Complete and merge the release-facing documentation and public reproduction/evidence surface.
-2. Publish the unchanged C-03 evidence through an immutable external archive and insert its final archival identifier or reference.
-3. Complete release-readiness verification.
-4. Seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
+1. Complete release-readiness verification.
+2. Seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
 
 This pipeline does not itself authorize a C-03 rerun, PPI rescue or replacement, grid revision, E3 or 48-of-48 weakening, an unofficial 108-cell aggregate, preregistration, confirmatory implementation or execution, repository rename, root README replacement, commit, push, merge, release, or continuation after freeze.

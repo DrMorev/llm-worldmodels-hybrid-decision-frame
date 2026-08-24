@@ -60,7 +60,7 @@ SHA-256:
 
 `28021bfb5c095cc2a8424fb0f21300f15aa34e4c49bdbd467ff91e2d4a276610`
 
-Publication of that archive is pending. No DOI, Zenodo record, release URL, or release tag is currently asserted.
+The C-03 evidence object is archived on Zenodo at [https://zenodo.org/records/22081466](https://zenodo.org/records/22081466). Its version-specific DOI is [https://doi.org/10.5281/zenodo.22081466](https://doi.org/10.5281/zenodo.22081466); its all-versions DOI is [https://doi.org/10.5281/zenodo.22081465](https://doi.org/10.5281/zenodo.22081465). For exact C-03 evidence verification, use the version-specific DOI or record and verify the downloaded file against the canonical SHA-256. No GitHub release URL or release tag is asserted.
 
 The release-facing result note lists the component artifact hashes: [C03_RESULT.md](C03_RESULT.md).
 

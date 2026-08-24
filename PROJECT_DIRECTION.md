@@ -404,6 +404,8 @@ C-03 was development-only. It was not an invalid run, it is not reclassified as 
 
 The canonical terminal-contract amendment at `5e448d306976567b1e456512317c26f64bc18c0a` passed independent terminal-development audit. Project Manager and auditor reconciliation was `MATCH — NO MATERIAL DISAGREEMENT`, and PR #10 merged the amendment into `main` at `2f7aa988cb0f607def899f789ba5f846cb4f21ba`.
 
+The unchanged C-03 evidence package is archived on Zenodo with version-specific DOI `10.5281/zenodo.22081466`. This archival publication does not alter C-03's development-only scientific status.
+
 The repository may release this development-stage terminal outcome with explicit non-claims and immutable evidence references. The repository name remains a temporary migration surface until the release-facing identity is separately approved.
 
 ---
@@ -686,7 +688,7 @@ Do not expand before that release into:
 
 ## 27. Current authorized next step
 
-Prepare the release-facing documentation and public reproduction/evidence surface, complete immutable external archival publication of the C-03 evidence, insert its final archival reference, verify release readiness, and then seek separate authorization for repository rename, release, tag, and freeze.
+Complete release-readiness verification, then seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
 
 This document does not authorize:
 
