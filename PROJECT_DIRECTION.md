@@ -402,7 +402,9 @@ Its exact development classification is `INCONCLUSIVE_BY_DEGENERACY`. The prospe
 
 C-03 was development-only. It was not an invalid run, it is not reclassified as negative, no confirmatory preregistration was committed, and no confirmatory run occurred. PPI did not satisfy the prospective conditions required to advance into preregistration and therefore does not advance in this phase.
 
-The repository may release this development-stage terminal outcome with explicit non-claims and immutable evidence references. The historical root README and repository name remain temporary migration surfaces until that release-facing structure is approved.
+The canonical terminal-contract amendment at `5e448d306976567b1e456512317c26f64bc18c0a` passed independent terminal-development audit. Project Manager and auditor reconciliation was `MATCH — NO MATERIAL DISAGREEMENT`, and PR #10 merged the amendment into `main` at `2f7aa988cb0f607def899f789ba5f846cb4f21ba`.
+
+The repository may release this development-stage terminal outcome with explicit non-claims and immutable evidence references. The repository name remains a temporary migration surface until the release-facing identity is separately approved.
 
 ---
 
@@ -420,9 +422,9 @@ Its potential scientific value is narrower:
 * evaluate sequential evidence accumulation;
 * publish a valid negative, inconclusive, or invalid result if the proposed approach does not work.
 
-Scientific novelty is currently unproven.
+A focused external related-work and release-positioning review was completed before release authoring. It did not support broad novelty claims.
 
-A focused related-work review and independent claims audit are required before any public novelty claim.
+The project claims neither a new statistical method nor a new general theory of correlated AI failure. Its release-facing value is bounded to specialization of existing finite-population audit machinery, a reproducible research artifact, development-stage evidence, and documented methodological and process lessons.
 
 ---
 
@@ -684,7 +686,7 @@ Do not expand before that release into:
 
 ## 27. Current authorized next step
 
-Synchronize the C-03 development-terminal governance contract, obtain an independent terminal-development result audit, prepare release-facing documentation and immutable external archival evidence, then seek separate release authorization.
+Prepare the release-facing documentation and public reproduction/evidence surface, complete immutable external archival publication of the C-03 evidence, insert its final archival reference, verify release readiness, and then seek separate authorization for repository rename, release, tag, and freeze.
 
 This document does not authorize:
 
