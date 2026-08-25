@@ -20,6 +20,8 @@ The historical latency scenario was not a valid reproducible basis for its old q
 
 Historical documents and prototype files may remain in Git history or clearly marked historical locations. Their presence does not make them active methods, evidence, or release claims.
 
+The old architecture-selection surface did not merely receive a new name. Repository audit found that material parts of its claimed evidence—including the latency scenario and approximately 70 ms crossover—were not reproducible or did not support the stated hypothesis. The project therefore retired those claims and narrowed to the surviving testable question concerning verifier evidence independence and joint dangerous-error estimation. This does not imply that every earlier engineering concern was false; it distinguishes the retired evidence claims from the narrower current scientific object.
+
 ## New active framing
 
 **Audit the Verifier**

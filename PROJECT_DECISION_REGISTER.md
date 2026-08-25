@@ -61,6 +61,8 @@ Proceed with the bounded release direction:
 
 Conduct one preregistered synthetic experiment in the existing repository, release the result regardless of outcome, and then freeze the repository.
 
+**Execution-state clarification:** this was the original prospective Path-A plan. C-03 instead reached the accepted development-terminal Path B before preregistration; the active operation is release, tag, final verification, and freeze of that exact outcome.
+
 ### Rationale
 
 A cosmetic cleanup would leave the project largely as prose.
@@ -222,9 +224,11 @@ The name must not imply:
 * AGI;
 * a new neural architecture.
 
-### Current restriction
+### Historical restriction
 
 Repository rename is not authorized before the preregistration and migration plan establish the final public structure.
+
+This restriction records the earlier pre-C-03 development plan. C-03 subsequently took the accepted development-terminal Path B before preregistration, and the repository was renamed to `sergey-morev/audit-the-verifier` under separate authorization.
 
 ### Reversal condition
 
@@ -2408,7 +2412,7 @@ Any replacement proxy requires a new recorded decision before implementation.
 
 ### Current authorized next stage
 
-Complete release-readiness verification, then seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze. The unchanged C-03 evidence package is archived on Zenodo with version-specific DOI `10.5281/zenodo.22081466`.
+The repository rename to `sergey-morev/audit-the-verifier` and public-identity cleanup were completed through PR #13, merged into `main` at `07998737f877a4ba52b3a79349bbafa7264034f1`. Complete the final release-hygiene closure, then seek separate authorization for the immutable release tag, GitHub Release publication, final verification, and repository freeze. The unchanged C-03 evidence package is archived on Zenodo with version-specific DOI `10.5281/zenodo.22081466`.
 
 ### Not authorized by the register itself
 
@@ -2421,7 +2425,7 @@ The register does not itself authorize:
 * preregistration;
 * confirmatory manifest creation;
 * confirmatory execution;
-* repository rename;
+* any further repository rename or metadata change;
 * replacement of the historical root README;
 * commit;
 * push;

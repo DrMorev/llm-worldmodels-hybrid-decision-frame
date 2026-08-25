@@ -1,1 +1,0 @@
-# Prototype package (stdlib-only).
