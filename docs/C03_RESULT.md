@@ -1,6 +1,8 @@
 # C-03 development result
 
-Repository: `sergey-morev/llm-worldmodels-hybrid-decision-frame`
+Repository identity at C-03 execution: `sergey-morev/llm-worldmodels-hybrid-decision-frame`
+
+Current repository identity: `sergey-morev/audit-the-verifier`
 
 Scientific execution head: `4225b49c6028ae5ddcc879eae1a9b9e6be2960d4`
 

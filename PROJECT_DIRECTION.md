@@ -6,7 +6,7 @@
 
 This document defines the active direction of the repository. It replaces the previous project identity centered on LLM-versus-world-model architectures, JEPA, AGI debates, general hybrid architectures, and architectural forecasting.
 
-Historical Git commits remain intact. The active repository surface is being migrated in bounded stages. The repository has not yet been renamed, and the current development prototype is not a preregistered or confirmatory result.
+Historical Git commits remain intact. The active repository identity is **Audit the Verifier** at `sergey-morev/audit-the-verifier`. C-03 completed as development-only with exact classification `INCONCLUSIVE_BY_DEGENERACY`; preregistration was not entered, PPI does not advance, and the current phase terminates through release and freeze.
 
 ---
 
@@ -316,14 +316,13 @@ More components do not automatically produce more independent evidence.
 
 ## 14. What the project is
 
-The project is intended to become:
+The project is:
 
-* a narrow research artifact;
-* a preregistered synthetic experiment;
+* a narrow development-terminal research artifact;
+* a completed development-only synthetic experiment;
 * a reproducible reference implementation;
-* a verifier-qualification protocol;
-* a case study in separating Advisory, Blocking, and Authorization authority;
-* a bounded investigation that can publish a positive, negative, inconclusive, or invalid result.
+* a bounded verifier-risk auditing case study;
+* a bounded investigation released with the exact C-03 class `INCONCLUSIVE_BY_DEGENERACY`.
 
 ---
 
@@ -353,18 +352,20 @@ The project is not:
 
 ## 16. Relationship to the previous repository
 
-The existing repository will be retained as the historical Git base but substantially rewritten.
+The existing repository was retained as the historical Git base while the active release surface was substantially rewritten.
 
-The active migration includes:
+An earlier accepted development plan anticipated:
 
 * the accepted canonical research question;
 * the merged Phase 1B development prototype and tests;
-* a future preregistration;
+* a future preregistration if the development advancement gate passed;
 * confirmatory implementation after preregistration;
 * development CI;
 * a new repository name and root README before release;
 * explicit limitations and non-claims;
 * a migration note.
+
+C-03 instead took the accepted development-terminal Path B before preregistration. The preregistration and confirmatory items in that earlier plan were therefore not entered; the repository rename and public-identity migration are complete.
 
 The following old elements will not remain part of the active scientific claim:
 
@@ -452,11 +453,11 @@ Agreement between AI components is not automatically independent evidence.
 
 ## 19. Expected portfolio value
 
-The repository should demonstrate:
+The repository demonstrates:
 
 * problem narrowing;
 * falsifiable experimental design;
-* preregistration;
+* prospective development eligibility and advancement gates;
 * statistical discipline;
 * explicit non-claims;
 * tolerance for negative results;
@@ -492,6 +493,8 @@ Any future experiment using real model providers requires a separate post-releas
 ---
 
 ## 21. Preregistration requirement
+
+This section and the following development/confirmatory-separation section preserve the Path-A requirements for any future phase that actually enters preregistration. C-03 did not enter preregistration, and these requirements are not the current next step for this Path-B release.
 
 Before implementation of the confirmatory experiment, the preregistration must fix:
 
@@ -688,7 +691,7 @@ Do not expand before that release into:
 
 ## 27. Current authorized next step
 
-Complete release-readiness verification, then seek separate authorization for repository rename, immutable release tag, GitHub release publication, and repository freeze.
+Complete the final release-hygiene closure, then seek separate authorization for the immutable release tag, GitHub Release publication, final verification, and repository freeze. The repository rename to `sergey-morev/audit-the-verifier` is complete.
 
 This document does not authorize:
 
