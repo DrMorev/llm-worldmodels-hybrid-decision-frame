@@ -321,8 +321,7 @@ The project is:
 * a narrow development-terminal research artifact;
 * a completed development-only synthetic experiment;
 * a reproducible reference implementation;
-* a verifier-qualification protocol;
-* a case study in separating Advisory, Blocking, and Authorization authority;
+* a bounded verifier-risk auditing case study;
 * a bounded investigation released with the exact C-03 class `INCONCLUSIVE_BY_DEGENERACY`.
 
 ---
