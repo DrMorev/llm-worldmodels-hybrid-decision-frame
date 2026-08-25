@@ -26,7 +26,7 @@ Historical documents and prototype files may remain in Git history or clearly ma
 
 **When agreement is not independent evidence**
 
-The GitHub repository slug remains `llm-worldmodels-hybrid-decision-frame` during release authoring. The intended future slug is `audit-the-verifier`; changing it requires separate authorization.
+The active GitHub repository slug is `audit-the-verifier`. Historical references to `llm-worldmodels-hybrid-decision-frame` remain where they identify earlier repository provenance.
 
 The project narrowed factually through the following sequence:
 

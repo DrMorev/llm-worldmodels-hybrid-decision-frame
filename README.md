@@ -190,7 +190,7 @@ The unchanged C-03 evidence package is archived on Zenodo as Dataset version C-0
 
 The active repository identity replaces an earlier architecture-selection framing and retires its unsupported quantitative claims. Historical commits remain available for provenance, but the old prototype is not active scientific evidence. See [MIGRATION.md](MIGRATION.md).
 
-The GitHub repository slug remains `llm-worldmodels-hybrid-decision-frame` in this task. `audit-the-verifier` is the intended future slug, subject to separate authorization.
+The active GitHub repository slug is `audit-the-verifier`. Historical repository identifiers are retained where required for provenance.
 
 ## Citation / license
 
